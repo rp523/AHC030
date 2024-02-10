@@ -4093,8 +4093,6 @@ fn main() {
 
 mod solver {
     use super::*;
-    //type Heard = Vec<Vec<Option<usize>>>;
-    type Fixed = Vec<Vec<Option<bool>>>;
     struct Oil {
         at: Vec<(usize, usize)>,
         h: usize,
@@ -4114,17 +4112,6 @@ mod solver {
             }
             Self { at, h, w }
         }
-        fn can_set(&self, fixed: &Fixed, y0: usize, x0: usize) -> bool {
-            for (ry, rx) in self.at.iter().copied() {
-                let y = y0 + ry;
-                let x = x0 + rx;
-                let Some(fixed) = fixed[y][x] else { continue; };
-                if !fixed {
-                    return false;
-                }
-            }
-            true
-        }
     }
     pub struct Solver {
         t0: Instant,
@@ -4133,84 +4120,254 @@ mod solver {
         eps: f64,
         oils: Vec<Oil>,
     }
-    struct ProbState {
-        bern_p0: Vec<Vec<f64>>,
+    #[derive(Clone)]
+    struct OilProb {
+        probs: Vec<Vec<f64>>,
     }
-    impl ProbState {
-        fn new(n: usize) -> Self {
-            Self {
-                bern_p0: vec![vec![1.0; n]; n],
+    impl OilProb {
+        fn predicted(&mut self, oil: &Oil, predicts: &Predicts) {
+            let h = self.probs.len();
+            let w = self.probs[0].len();
+            let mut can_set = vec![vec![true; w]; h];
+            for y0 in 0..h {
+                for x0 in 0..w {
+                    'try_set: for &(ry, rx) in oil.at.iter() {
+                        let y = y0 + ry;
+                        let x = x0 + rx;
+                        if let Some(is_pos) = predicts.is_pos[y][x] {
+                            if !is_pos {
+                                can_set[y0][x0] = false;
+                                break 'try_set;
+                            }
+                        }
+                    }
+                }
             }
-        }
-        fn add(&mut self, cnt: &[Vec<usize>], val_num: usize) {
-            let n = self.bern_p0.len();
-            for y in 0..n {
-                for x in 0..n {
-                    let cnt = cnt[y][x];
-                    let p0 = if cnt == 0 {
-                        1.0
+            let corr = 1.0
+                / (can_set
+                    .iter()
+                    .map(|can_set| can_set.iter().filter(|&&b| b).count())
+                    .sum::<usize>()) as f64;
+            for y0 in 0..h {
+                for x0 in 0..w {
+                    if can_set[y0][x0] {
+                        self.probs[y0][x0] *= corr;
                     } else {
-                        let p1 = cnt as f64 / val_num as f64;
-                        1.0 - p1
-                    };
-                    self.bern_p0[y][x] *= p0;
+                        self.probs[y0][x0] = 0.0;
+                    }
                 }
             }
         }
-        fn get_dig_pos(&self, fixed: &Fixed) -> (usize, usize) {
-            let mut pos = (0, 0);
+        fn new(n: usize, oil: &Oil) -> Self {
+            let h = n - oil.h + 1;
+            let w = n - oil.w + 1;
+            let p = 1.0 / (h * w) as f64;
+            let probs = vec![vec![p; w]; h];
+            Self { probs }
+        }
+        fn gen_next(pivot_oil: &[OilProb], rand: &mut XorShift64) -> Vec<OilProb> {
+            pivot_oil
+                .iter()
+                .map(|oil| {
+                    let mut next = oil.clone();
+                    let mut sm = 0.0;
+                    next.probs.iter_mut().for_each(|row| {
+                        row.iter_mut().for_each(|x| {
+                            let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
+                            *x = (*x + noise).clamp(0.0, 1.0);
+                            sm += *x;
+                        })
+                    });
+                    let sm = sm;
+                    next.probs.iter_mut().for_each(|row| {
+                        row.iter_mut().for_each(|x| {
+                            *x /= sm;
+                        });
+                    });
+                    next
+                })
+                .collect::<Vec<_>>()
+        }
+    }
+    #[derive(Clone)]
+    struct FieldProb {
+        probs: Vec<Vec<Vec<f64>>>,
+    }
+    impl FieldProb {
+        fn new(n: usize, m: usize) -> Self {
+            Self {
+                probs: vec![vec![vec![0.0; m + 1]; n]; n],
+            }
+        }
+        fn eval(&self, predicts: &Predicts) -> (Option<f64>, (usize, usize)) {
             let mut eval = None;
-            let n = self.bern_p0.len();
-            for y in 0..n {
-                for x in 0..n {
-                    if fixed[y][x].is_some() {
+            let mut eval_pos = (0, 0);
+            for (y, field) in self.probs.iter().enumerate() {
+                for (x, field) in field.iter().enumerate() {
+                    if predicts.is_pos[y][x].is_some() {
                         continue;
                     }
-                    let p0 = self.bern_p0[y][x];
-                    //let sd = (p0 * (1.0 - p0)).sqrt();
-                    //if eval.chmin(p0) {
-                    if eval.chmin((p0 - 0.5).abs()) {
-                        pos = (y, x);
+                    let eval1 = (field[0] - 0.5).abs();
+                    if eval.chmin(eval1) {
+                        eval_pos = (y, x);
                     }
                 }
             }
-            pos
+            (eval, eval_pos)
+        }
+        fn may_fin(&self, predicts: &Predicts) -> bool {
+            let (eval, _) = self.eval(predicts);
+            if let Some(eval) = eval {
+                eval > 0.25
+            } else {
+                true
+            }
         }
     }
-    impl Solver {
-        pub fn solve(&self) {
-            let mut fixed: Fixed = vec![vec![None; self.n]; self.n];
-            let mut remain = 2 * self.n * self.n;
-            let mut prob_state = self.gen_prob_state(&fixed);
-            while remain > 0 {
-                self.propagate(&mut fixed, &prob_state);
-                prob_state = self.gen_prob_state(&fixed);
-                let tried = if let Some((al, ans)) = self.may_fixed(&fixed, &prob_state) {
-                    let mut tried = true;
-                    let fin = if al {
-                        self.try_answer(ans)
-                    } else if remain % 10 == 0 {
-                        self.try_answer(ans)
-                    } else {
-                        tried = false;
-                        false
-                    };
-                    if fin {
-                        std::process::exit(0);
-                    }
-                    tried
-                } else {
-                    false
-                };
-                if !tried {
-                    let (dig_y, dig_x) = prob_state.get_dig_pos(&fixed);
-                    let v = self.dig(dig_y, dig_x);
-                    fixed[dig_y][dig_x] = Some(v > 0);
-                }
-                remain -= 1;
+    struct Predicts {
+        hear: Vec<((usize, usize), usize)>,
+        is_pos: Vec<Vec<Option<bool>>>,
+    }
+    impl Predicts {
+        fn new(n: usize) -> Self {
+            Self {
+                hear: vec![],
+                is_pos: vec![vec![None; n]; n],
             }
         }
-        fn try_answer(&self, ans: Vec<(usize, usize)>) -> bool {
+        fn insert(&mut self, pos: (usize, usize), sm: usize) {
+            self.hear.push((pos, sm));
+            self.is_pos[pos.0][pos.1] = Some(sm > 0);
+        }
+    }
+    const TIME_LIMIT: usize = 2500;
+    const NEXT_EPS: f64 = 0.01;
+    impl Solver {
+        fn predict(pos: (usize, usize)) -> usize {
+            println!("q 1 {} {}", pos.0, pos.1);
+            read::<usize>()
+        }
+        pub fn solve(&self) {
+            //let mut rng = ChaChaRng::from_seed([0; 32]);
+            let mut rand = XorShift64::new();
+            let mut predicts = Predicts::new(self.n);
+            let mut pivot_oil = self
+                .oils
+                .iter()
+                .map(|oil| OilProb::new(self.n, oil))
+                .collect::<Vec<_>>();
+            let tot_loop = 2 * self.n * self.n;
+            let mut remain = tot_loop;
+
+            while remain > 0 {
+                let pos = {
+                    let pivot_field_t = self.propagate(&pivot_oil);
+                    let (pivot_eval, pos) = pivot_field_t.eval(&predicts);
+                    if pivot_eval.is_none() {
+                        assert!(self.try_answer(&pivot_field_t, &predicts));
+                    }
+                    pos
+                };
+                predicts.insert(pos, Self::predict(pos));
+                remain -= 1;
+                pivot_oil
+                    .iter_mut()
+                    .zip(self.oils.iter())
+                    .for_each(|(p, o)| {
+                        p.predicted(o, &predicts);
+                    });
+                let mut pivot_field = self.propagate(&pivot_oil);
+
+                let lim_t = TIME_LIMIT * (tot_loop - remain + 1) / tot_loop;
+                let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
+                //eprintln!("{} {} {} {}", tot_loop, remain, self.t0.elapsed().as_millis() as usize , lim_t);
+                while (self.t0.elapsed().as_millis() as usize) < lim_t {
+                    let next_oil = OilProb::gen_next(&pivot_oil, &mut rand);
+                    let next_field = self.propagate(&next_oil);
+                    let next_loss = self.calc_loss(&predicts, &next_field);
+                    if pivot_loss.chmin(next_loss) {
+                        pivot_oil = next_oil;
+                        pivot_field = next_field;
+                    }
+                }
+                if remain % 10 == 0 && pivot_field.may_fin(&predicts) {
+                    if self.try_answer(&pivot_field, &predicts) {
+                        remain -= 1;
+                    }
+                }
+            }
+        }
+        fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
+            let mut loss = 0.0;
+            for &((y, x), sm) in predicts.hear.iter() {
+                let ex = field.probs[y][x]
+                    .iter()
+                    .enumerate()
+                    .map(|(mi, &p)| mi as f64 * p)
+                    .sum::<f64>();
+                let delta = ex - sm as f64;
+                loss += delta * delta;
+            }
+            loss
+        }
+        fn propagate(&self, oil_probs: &[OilProb]) -> FieldProb {
+            let mut dp = FieldProb::new(self.n, self.m);
+            for y in 0..self.n {
+                for x in 0..self.n {
+                    dp.probs[y][x][0] = 1.0;
+                }
+            }
+            for (oi, (oil, oil_prob)) in self.oils.iter().zip(oil_probs.iter()).enumerate() {
+                let mut rise = vec![vec![0.0; self.n]; self.n];
+                // for each oil positon
+                for (y0, prob_row) in oil_prob.probs.iter().enumerate() {
+                    for (x0, &oil_prob) in prob_row.iter().enumerate() {
+                        // field position
+                        for &(ry, rx) in oil.at.iter() {
+                            let y = y0 + ry;
+                            let x = x0 + rx;
+                            rise[y][x] += oil_prob;
+                        }
+                    }
+                }
+                for y in 0..self.n {
+                    for x in 0..self.n {
+                        for pm in (0..=oi).rev() {
+                            let nm = pm + 1;
+                            let mov = dp.probs[y][x][pm] * rise[y][x];
+                            dp.probs[y][x][pm] -= mov;
+                            dp.probs[y][x][nm] += mov;
+                        }
+                    }
+                }
+            }
+            dp
+        }
+        fn try_answer(&self, field: &FieldProb, predicts: &Predicts) -> bool {
+            let mut ans = vec![];
+            for (y, field) in field.probs.iter().enumerate() {
+                for (x, field) in field.iter().enumerate() {
+                    if let Some(is_pos) = predicts.is_pos[y][x] {
+                        if is_pos {
+                            ans.push((y, x));
+                        }
+                    } else if field[0] < 0.5 {
+                        ans.push((y, x));
+                    }
+                }
+            }
+            let min_len = self.oils.iter().map(|oil| oil.at.len()).min().unwrap();
+            let max_len = self.oils.iter().map(|oil| oil.at.len()).sum::<usize>();
+            if min_len <= ans.len() && ans.len() <= max_len {
+                if self.answer(ans) {
+                    std::process::exit(0);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        fn answer(&self, ans: Vec<(usize, usize)>) -> bool {
             print!("a ");
             print!("{} ", ans.len());
             for (y, x) in ans {
@@ -4218,143 +4375,6 @@ mod solver {
             }
             println!();
             read::<usize>() == 1
-        }
-        fn may_fixed(
-            &self,
-            fixed: &Fixed,
-            prob_state: &ProbState,
-        ) -> Option<(bool, Vec<(usize, usize)>)> {
-            let mut eval = None;
-            let mut ans = vec![];
-            let mut all_fixed = true;
-            for y in 0..self.n {
-                for x in 0..self.n {
-                    if let Some(fixed) = fixed[y][x] {
-                        if fixed {
-                            ans.push((y, x));
-                        }
-                    } else {
-                        all_fixed = false;
-                        let p0 = prob_state.bern_p0[y][x];
-                        eval.chmin((p0 - 0.5).abs());
-                        if p0 < 0.5 {
-                            ans.push((y, x));
-                        }
-                    }
-                }
-            }
-            let min_d = self.oils.iter().map(|oil| oil.at.len()).max().unwrap();
-            let sum_d = self.oils.iter().map(|oil| oil.at.len()).sum::<usize>();
-            if all_fixed {
-                Some((true, ans))
-            } else if eval.unwrap() > 0.25 && ans.len() >= min_d && ans.len() <= sum_d {
-                Some((false, ans))
-            } else {
-                None
-            }
-        }
-        fn dig(&self, dig_y: usize, dig_x: usize) -> usize {
-            println!("q 1 {} {}", dig_y, dig_x);
-            read::<usize>()
-        }
-        fn propagate(&self, fixed: &mut Fixed, prob_state: &ProbState) {
-            for y in 0..self.n {
-                for x in 0..self.n {
-                    if prob_state.bern_p0[y][x] == 1.0 {
-                        fixed[y][x] = Some(false);
-                    }
-                }
-            }
-            loop {
-                let mut updated = false;
-                let mut val_num_max = 0usize;
-                let mut cnt = vec![vec![0usize; self.n]; self.n];
-                for oil in self.oils.iter() {
-                    let mut val_num = 0;
-                    let mut val_sample = (0, 0);
-                    for y0 in 0..(self.n - oil.h + 1) {
-                        for x0 in 0..(self.n - oil.w + 1) {
-                            if oil.can_set(fixed, y0, x0) {
-                                val_sample = (y0, x0);
-                                val_num += 1;
-                                for (ry, rx) in oil.at.iter().copied() {
-                                    let y = y0 + ry;
-                                    let x = x0 + rx;
-                                    cnt[y][x] += 1;
-                                }
-                            }
-                        }
-                    }
-                    val_num_max.chmax(val_num);
-                    if val_num == 1 {
-                        for (ry, rx) in oil.at.iter().copied() {
-                            let y = val_sample.0 + ry;
-                            let x = val_sample.1 + rx;
-                            if fixed[y][x].is_none() {
-                                updated = true;
-                                fixed[y][x] = Some(true);
-                            }
-                        }
-                    }
-                }
-                for y in 0..self.n {
-                    for x in 0..self.n {
-                        if cnt[y][x] > 0 {
-                            continue;
-                        }
-                        if fixed[y][x].is_some() {
-                            continue;
-                        }
-                        fixed[y][x] = Some(false);
-                        updated = true;
-                    }
-                }
-                if !updated {
-                    if val_num_max == 1 {
-                        for oil in self.oils.iter() {
-                            'oil: for y0 in 0..(self.n - oil.h + 1) {
-                                for x0 in 0..(self.n - oil.w + 1) {
-                                    if oil.can_set(fixed, y0, x0) {
-                                        for (ry, rx) in oil.at.iter().copied() {
-                                            let y = y0 + ry;
-                                            let x = x0 + rx;
-                                            fixed[y][x] = Some(true);
-                                        }
-                                        break 'oil;
-                                    }
-                                }
-                            }
-                        }
-                        for y in 0..self.n {
-                            for x in 0..self.n {
-                                if fixed[y][x].is_none() {
-                                    fixed[y][x] = Some(false);
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-        fn gen_prob_state(&self, fixed: &Fixed) -> ProbState {
-            let mut prob_state = ProbState::new(self.n);
-            for oil in self.oils.iter() {
-                let mut val_num = 0;
-                let mut cnt = vec![vec![0; self.n]; self.n];
-                for y0 in 0..(self.n - oil.h + 1) {
-                    for x0 in 0..(self.n - oil.w + 1) {
-                        if oil.can_set(fixed, y0, x0) {
-                            val_num += 1;
-                            for (ry, rx) in oil.at.iter().copied() {
-                                cnt[y0 + ry][x0 + rx] += 1;
-                            }
-                        }
-                    }
-                }
-                prob_state.add(&cnt, val_num);
-            }
-            prob_state
         }
         pub fn new() -> Self {
             let t0 = Instant::now();
