@@ -370,7 +370,8 @@ mod segment_tree {
     use std::ops::{Add, Sub};
     #[derive(Debug, Clone)]
     pub struct SegmentTree<T> {
-        n: usize,
+        n2: usize,   // implemented leaf num (2^n)
+        neff: usize, // effective vector length
         dat: Vec<T>,
         pair_op: fn(T, T) -> T,
     }
@@ -381,10 +382,12 @@ mod segment_tree {
                 n2 *= 2;
             }
             let mut s = Self {
-                n,
+                n2,
+                neff: n,
                 pair_op,
-                dat: vec![ini_val.clone(); 2 * n2],
+                dat: vec![ini_val.clone(); 2 * n2 - 1],
             };
+
             for i in 0..n {
                 s.set(i, ini_val.clone());
             }
@@ -397,73 +400,52 @@ mod segment_tree {
                 n2 *= 2;
             }
             let mut st = Self {
-                n,
+                n2,
+                neff: n,
                 pair_op,
-                dat: vec![ini_values[0].clone(); 2 * n2],
+                dat: vec![ini_values[0].clone(); 2 * n2 - 1],
             };
+
             for (i, ini_val) in ini_values.iter().enumerate() {
                 st.set(i, ini_val.clone());
             }
             st
         }
         pub fn set(&mut self, mut pos: usize, val: T) {
-            pos += self.n;
+            pos += self.n2 - 1;
             self.dat[pos] = val;
-            let mut par = pos / 2;
-            while par >= 1 {
-                let l = par * 2;
-                let r = l + 1;
-                self.dat[par] = (self.pair_op)(self.dat[l].clone(), self.dat[r].clone());
-                par /= 2;
+            while pos > 0 {
+                pos = (pos - 1) / 2; // parent
+                self.dat[pos] =
+                    (self.pair_op)(self.dat[pos * 2 + 1].clone(), self.dat[pos * 2 + 2].clone());
             }
         }
         pub fn get(&self, pos: usize) -> T {
-            self.dat[pos + self.n].clone()
+            self.dat[pos + self.n2 - 1].clone()
         }
         // get query value of [a, b]
-        pub fn query(&self, mut a: usize, mut b: usize) -> T {
-            a += self.n;
-            b += self.n + 1;
-            self.get_node(a, b)
+        pub fn query(&self, a: usize, b: usize) -> T {
+            self.query_sub(a, b + 1, 0, 0, self.n2)
         }
-        fn get_node(&self, a: usize, b: usize) -> T {
-            if a & 1 == 1 {
-                let pa = (a + 1) / 2;
-                if b & 1 == 1 {
-                    let pb = (b - 1) / 2;
-                    if pa < pb {
-                        (self.pair_op)(
-                            self.get_node(pa, pb),
-                            (self.pair_op)(self.dat[a].clone(), self.dat[b - 1].clone()),
-                        )
-                    } else {
-                        (self.pair_op)(self.dat[a].clone(), self.dat[b - 1].clone())
-                    }
+        // get query value of [a, b)
+        fn query_sub(&self, a: usize, b: usize, node: usize, node_l: usize, node_r: usize) -> T {
+            if (node_r <= a) || (b <= node_l) {
+                panic!("invalid query range, ({a}, {b})");
+            } else if (a <= node_l) && (node_r <= b) {
+                // this not is covered by given interval.
+                self.dat[node].clone()
+            } else if a < (node_l + node_r) / 2 {
+                let vl = self.query_sub(a, b, node * 2 + 1, node_l, (node_l + node_r) / 2);
+                if (node_l + node_r) / 2 < b {
+                    let vr = self.query_sub(a, b, node * 2 + 2, (node_l + node_r) / 2, node_r);
+                    (self.pair_op)(vl, vr)
                 } else {
-                    let pb = b / 2;
-                    if pa < pb {
-                        (self.pair_op)(self.get_node(pa, pb), self.dat[a].clone())
-                    } else {
-                        self.dat[a].clone()
-                    }
+                    vl
                 }
+            } else if (node_l + node_r) / 2 < b {
+                self.query_sub(a, b, node * 2 + 2, (node_l + node_r) / 2, node_r)
             } else {
-                let pa = a / 2;
-                if b & 1 == 1 {
-                    let pb = (b - 1) / 2;
-                    if pa < pb {
-                        (self.pair_op)(self.get_node(pa, pb), self.dat[b - 1].clone())
-                    } else {
-                        self.dat[b - 1].clone()
-                    }
-                } else {
-                    let pb = b / 2;
-                    if pa < pb {
-                        self.get_node(pa, pb)
-                    } else {
-                        unreachable!()
-                    }
-                }
+                panic!("invalid query range, ({a}, {b})");
             }
         }
     }
@@ -1045,7 +1027,7 @@ mod modint {
         }
     }
 }
-use modint::{DynModInt, ModInt};
+use modint::ModInt;
 
 pub trait IntegerOperation {
     fn into_primes(self) -> BTreeMap<Self, usize>
@@ -4100,9 +4082,293 @@ mod procon_reader {
     }
 }
 use procon_reader::*;
+
+use crate::modint::DynModInt;
 //////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////
 
 fn main() {
-    read::<usize>();
+    solver::Solver::new().solve();
+}
+
+mod solver {
+    use super::*;
+    //type Heard = Vec<Vec<Option<usize>>>;
+    type Fixed = Vec<Vec<Option<bool>>>;
+    struct Oil {
+        at: Vec<(usize, usize)>,
+        h: usize,
+        w: usize,
+    }
+    impl Oil {
+        fn new() -> Self {
+            let mut at = vec![];
+            let mut h = 0;
+            let mut w = 0;
+            for _ in 0..read::<usize>() {
+                let y = read::<usize>();
+                let x = read::<usize>();
+                at.push((y, x));
+                h.chmax(y + 1);
+                w.chmax(x + 1);
+            }
+            Self { at, h, w }
+        }
+        fn can_set(&self, fixed: &Fixed, y0: usize, x0: usize) -> bool {
+            for (ry, rx) in self.at.iter().copied() {
+                let y = y0 + ry;
+                let x = x0 + rx;
+                let Some(fixed) = fixed[y][x] else { continue; };
+                if !fixed {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+    pub struct Solver {
+        t0: Instant,
+        n: usize,
+        m: usize,
+        eps: f64,
+        oils: Vec<Oil>,
+    }
+    struct ProbState {
+        bern_p0: Vec<Vec<f64>>,
+    }
+    impl ProbState {
+        fn new(n: usize) -> Self {
+            Self {
+                bern_p0: vec![vec![1.0; n]; n],
+            }
+        }
+        fn add(&mut self, cnt: &[Vec<usize>], val_num: usize) {
+            let n = self.bern_p0.len();
+            for y in 0..n {
+                for x in 0..n {
+                    let cnt = cnt[y][x];
+                    let p0 = if cnt == 0 {
+                        1.0
+                    } else {
+                        let p1 = cnt as f64 / val_num as f64;
+                        1.0 - p1
+                    };
+                    self.bern_p0[y][x] *= p0;
+                }
+            }
+        }
+        fn get_dig_pos(&self, fixed: &Fixed) -> (usize, usize) {
+            let mut pos = (0, 0);
+            let mut eval = None;
+            let n = self.bern_p0.len();
+            for y in 0..n {
+                for x in 0..n {
+                    if fixed[y][x].is_some() {
+                        continue;
+                    }
+                    let p0 = self.bern_p0[y][x];
+                    //let sd = (p0 * (1.0 - p0)).sqrt();
+                    //if eval.chmin(p0) {
+                    if eval.chmin((p0 - 0.5).abs()) {
+                        pos = (y, x);
+                    }
+                }
+            }
+            pos
+        }
+    }
+    impl Solver {
+        pub fn solve(&self) {
+            let mut fixed: Fixed = vec![vec![None; self.n]; self.n];
+            let mut remain = 2 * self.n * self.n;
+            let mut prob_state = self.gen_prob_state(&fixed);
+            while remain > 0 {
+                self.propagate(&mut fixed, &prob_state);
+                prob_state = self.gen_prob_state(&fixed);
+                let tried = if let Some((al, ans)) = self.may_fixed(&fixed, &prob_state) {
+                    let mut tried = true;
+                    let fin = if al {
+                        self.try_answer(ans)
+                    } else if remain % 10 == 0 {
+                        self.try_answer(ans)
+                    } else {
+                        tried = false;
+                        false
+                    };
+                    if fin {
+                        std::process::exit(0);
+                    }
+                    tried
+                } else {
+                    false
+                };
+                if !tried {
+                    let (dig_y, dig_x) = prob_state.get_dig_pos(&fixed);
+                    let v = self.dig(dig_y, dig_x);
+                    fixed[dig_y][dig_x] = Some(v > 0);
+                }
+                remain -= 1;
+            }
+        }
+        fn try_answer(&self, ans: Vec<(usize, usize)>) -> bool {
+            print!("a ");
+            print!("{} ", ans.len());
+            for (y, x) in ans {
+                print!("{} {} ", y, x);
+            }
+            println!();
+            read::<usize>() == 1
+        }
+        fn may_fixed(
+            &self,
+            fixed: &Fixed,
+            prob_state: &ProbState,
+        ) -> Option<(bool, Vec<(usize, usize)>)> {
+            let mut eval = None;
+            let mut ans = vec![];
+            let mut all_fixed = true;
+            for y in 0..self.n {
+                for x in 0..self.n {
+                    if let Some(fixed) = fixed[y][x] {
+                        if fixed {
+                            ans.push((y, x));
+                        }
+                    } else {
+                        all_fixed = false;
+                        let p0 = prob_state.bern_p0[y][x];
+                        eval.chmin((p0 - 0.5).abs());
+                        if p0 < 0.5 {
+                            ans.push((y, x));
+                        }
+                    }
+                }
+            }
+            let min_d = self.oils.iter().map(|oil| oil.at.len()).max().unwrap();
+            let sum_d = self.oils.iter().map(|oil| oil.at.len()).sum::<usize>();
+            if all_fixed {
+                Some((true, ans))
+            } else if eval.unwrap() > 0.25 && ans.len() >= min_d && ans.len() <= sum_d {
+                Some((false, ans))
+            } else {
+                None
+            }
+        }
+        fn dig(&self, dig_y: usize, dig_x: usize) -> usize {
+            println!("q 1 {} {}", dig_y, dig_x);
+            read::<usize>()
+        }
+        fn propagate(&self, fixed: &mut Fixed, prob_state: &ProbState) {
+            for y in 0..self.n {
+                for x in 0..self.n {
+                    if prob_state.bern_p0[y][x] == 1.0 {
+                        fixed[y][x] = Some(false);
+                    }
+                }
+            }
+            loop {
+                let mut updated = false;
+                let mut val_num_max = 0usize;
+                let mut cnt = vec![vec![0usize; self.n]; self.n];
+                for oil in self.oils.iter() {
+                    let mut val_num = 0;
+                    let mut val_sample = (0, 0);
+                    for y0 in 0..(self.n - oil.h + 1) {
+                        for x0 in 0..(self.n - oil.w + 1) {
+                            if oil.can_set(fixed, y0, x0) {
+                                val_sample = (y0, x0);
+                                val_num += 1;
+                                for (ry, rx) in oil.at.iter().copied() {
+                                    let y = y0 + ry;
+                                    let x = x0 + rx;
+                                    cnt[y][x] += 1;
+                                }
+                            }
+                        }
+                    }
+                    val_num_max.chmax(val_num);
+                    if val_num == 1 {
+                        for (ry, rx) in oil.at.iter().copied() {
+                            let y = val_sample.0 + ry;
+                            let x = val_sample.1 + rx;
+                            if fixed[y][x].is_none() {
+                                updated = true;
+                                fixed[y][x] = Some(true);
+                            }
+                        }
+                    }
+                }
+                for y in 0..self.n {
+                    for x in 0..self.n {
+                        if cnt[y][x] > 0 {
+                            continue;
+                        }
+                        if fixed[y][x].is_some() {
+                            continue;
+                        }
+                        fixed[y][x] = Some(false);
+                        updated = true;
+                    }
+                }
+                if !updated {
+                    if val_num_max == 1 {
+                        for oil in self.oils.iter() {
+                            'oil: for y0 in 0..(self.n - oil.h + 1) {
+                                for x0 in 0..(self.n - oil.w + 1) {
+                                    if oil.can_set(fixed, y0, x0) {
+                                        for (ry, rx) in oil.at.iter().copied() {
+                                            let y = y0 + ry;
+                                            let x = x0 + rx;
+                                            fixed[y][x] = Some(true);
+                                        }
+                                        break 'oil;
+                                    }
+                                }
+                            }
+                        }
+                        for y in 0..self.n {
+                            for x in 0..self.n {
+                                if fixed[y][x].is_none() {
+                                    fixed[y][x] = Some(false);
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        fn gen_prob_state(&self, fixed: &Fixed) -> ProbState {
+            let mut prob_state = ProbState::new(self.n);
+            for oil in self.oils.iter() {
+                let mut val_num = 0;
+                let mut cnt = vec![vec![0; self.n]; self.n];
+                for y0 in 0..(self.n - oil.h + 1) {
+                    for x0 in 0..(self.n - oil.w + 1) {
+                        if oil.can_set(fixed, y0, x0) {
+                            val_num += 1;
+                            for (ry, rx) in oil.at.iter().copied() {
+                                cnt[y0 + ry][x0 + rx] += 1;
+                            }
+                        }
+                    }
+                }
+                prob_state.add(&cnt, val_num);
+            }
+            prob_state
+        }
+        pub fn new() -> Self {
+            let t0 = Instant::now();
+            let n = read::<usize>();
+            let m = read::<usize>();
+            let eps = read::<f64>();
+            let oils = (0..m).map(|_| Oil::new()).collect::<Vec<_>>();
+            Self {
+                t0,
+                n,
+                m,
+                eps,
+                oils,
+            }
+        }
+    }
 }
