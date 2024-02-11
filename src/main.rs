@@ -4535,6 +4535,9 @@ mod solver {
                 }
                 let delta = exp_sum - v;
                 loss += delta * delta;
+                if (exp_sum.clamp(0.0, 1.0) - 0.5) * (v - 0.5) < 0.0 {
+                    loss += (self.n * self.n * self.m).pow(2) as f64;
+                }
             }
             loss
         }
