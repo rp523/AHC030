@@ -4181,9 +4181,9 @@ mod solver {
         pub fn solve(&self) {
             let mut fixed: Fixed = vec![vec![None; self.n]; self.n];
             let mut remain = 2 * self.n * self.n;
-            let mut prob_state = self.gen_prob_state(&fixed);
+            let mut prob_state;// = self.gen_prob_state(&fixed);
             while remain > 0 {
-                self.propagate(&mut fixed, &prob_state);
+                self.propagate(&mut fixed);
                 prob_state = self.gen_prob_state(&fixed);
                 let tried = if let Some((al, ans)) = self.may_fixed(&fixed, &prob_state) {
                     let mut tried = true;
@@ -4257,14 +4257,7 @@ mod solver {
             println!("q 1 {} {}", dig_y, dig_x);
             read::<usize>()
         }
-        fn propagate(&self, fixed: &mut Fixed, prob_state: &ProbState) {
-            for y in 0..self.n {
-                for x in 0..self.n {
-                    if prob_state.bern_p0[y][x] == 1.0 {
-                        fixed[y][x] = Some(false);
-                    }
-                }
-            }
+        fn propagate(&self, fixed: &mut Fixed) {
             loop {
                 let mut updated = false;
                 let mut val_num_max = 0usize;
