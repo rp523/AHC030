@@ -4393,6 +4393,7 @@ mod solver {
     }
     const TIME_LIMIT: usize = 3000;
     const NEXT_EPS: f64 = 0.01;
+    const VISUALIZE: bool = false;
     impl Solver {
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
@@ -4424,6 +4425,29 @@ mod solver {
                     if pivot_loss.chmin(next_loss) {
                         pivot_oil = next_oil;
                         //pivot_field = next_field;
+                    }
+                }
+                if VISUALIZE {
+                    fn level(v: usize) -> (char, char) {
+                        let s = String::from("0123456789abcdef").chars().collect::<Vec<_>>();
+                        let c0 = s[v / 16];
+                        let c1 = s[v % 16];
+                        (c0, c1)
+                    }
+                    for (y, p) in pivot_field.probs.iter().enumerate() {
+                        for (x, p) in p.iter().enumerate() {
+                            let ex = p
+                                .iter()
+                                .enumerate()
+                                .map(|(mi, p)| mi as f64 * p)
+                                .sum::<f64>()
+                                .clamp(0.0, 1.0);
+                            let v = ((ex * 255.0) as usize).clamp(0, 255);
+                            let r = level(255 - v);
+                            let g = level(255);
+                            let b = level(255 - v);
+                            println!("#c {} {} #{}{}{}{}{}{}", y, x, r.0, r.1, g.0, g.1, b.0, b.1);
+                        }
                     }
                 }
                 if proceed % 10 == 0 && proceed < tot && self.may_fin_oil(&pivot_oil) {
