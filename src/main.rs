@@ -4092,6 +4092,8 @@ fn main() {
 }
 
 mod solver {
+    use rand_chacha::rand_core::le;
+
     use super::*;
     struct Oil {
         at: Vec<(usize, usize)>,
@@ -4122,13 +4124,14 @@ mod solver {
     }
     #[derive(Clone)]
     struct OilProb {
-        probs: Vec<Vec<f64>>,
+        leftop: Vec<Vec<f64>>,
+        can_set: Vec<Vec<bool>>,
     }
     impl OilProb {
-        fn from_predicted(&mut self, oil: &Oil, predicts: &Predicts) {
-            let h = self.probs.len();
-            let w = self.probs[0].len();
-            let mut can_set = vec![vec![false; w]; h];
+        fn from_predicted(&mut self, oil: &Oil, predicts: &Predicts) -> bool {
+            let mut updated = false;
+            let h = self.leftop.len();
+            let w = self.leftop[0].len();
             let mut valid_norm = 0.0;
             for y0 in 0..h {
                 for x0 in 0..w {
@@ -4143,29 +4146,34 @@ mod solver {
                             }
                         }
                     }
-                    can_set[y0][x0] = can_set_here;
+                    if self.can_set[y0][x0] != can_set_here {
+                        self.can_set[y0][x0] = can_set_here;
+                        updated = true;
+                    }
                     if can_set_here {
-                        valid_norm += self.probs[y0][x0];
+                        valid_norm += self.leftop[y0][x0];
                     }
                 }
             }
             let corr = 1.0 / valid_norm;
             for y0 in 0..h {
                 for x0 in 0..w {
-                    if can_set[y0][x0] {
-                        self.probs[y0][x0] *= corr;
+                    if self.can_set[y0][x0] {
+                        self.leftop[y0][x0] *= corr;
                     } else {
-                        self.probs[y0][x0] = 0.0;
+                        self.leftop[y0][x0] = 0.0;
                     }
                 }
             }
+            updated
         }
         fn new(n: usize, oil: &Oil) -> Self {
             let h = n - oil.h + 1;
             let w = n - oil.w + 1;
             let p = 1.0 / (h * w) as f64;
-            let probs = vec![vec![p; w]; h];
-            Self { probs }
+            let leftop = vec![vec![p; w]; h];
+            let can_set = vec![vec![true; w]; h];
+            Self { leftop, can_set }
         }
         fn gen_next(pivot_oil: &[OilProb], rand: &mut XorShift64) -> Vec<OilProb> {
             pivot_oil
@@ -4173,19 +4181,35 @@ mod solver {
                 .map(|oil| {
                     let mut next = oil.clone();
                     let mut norm = 0.0;
-                    next.probs.iter_mut().for_each(|row| {
-                        row.iter_mut().for_each(|x| {
-                            let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
-                            *x = (*x + noise).clamp(0.0, 1.0);
-                            norm += *x;
-                        })
-                    });
+                    next.leftop.iter_mut().zip(next.can_set.iter()).for_each(
+                        |(leftop, can_set)| {
+                            leftop
+                                .iter_mut()
+                                .zip(can_set.iter())
+                                .for_each(|(leftop, &can_set)| {
+                                    if can_set {
+                                        let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
+                                        *leftop = (*leftop + noise).clamp(0.0, 1.0);
+                                        norm += *leftop;
+                                    } else {
+                                        debug_assert!(*leftop == 0.0);
+                                    }
+                                })
+                        },
+                    );
                     let inv_norm = 1.0 / norm;
-                    next.probs.iter_mut().for_each(|row| {
-                        row.iter_mut().for_each(|x| {
-                            *x *= inv_norm;
-                        });
-                    });
+                    next.leftop.iter_mut().zip(next.can_set.iter()).for_each(
+                        |(leftop, can_set)| {
+                            leftop
+                                .iter_mut()
+                                .zip(can_set.iter())
+                                .for_each(|(leftop, &can_set)| {
+                                    if can_set {
+                                        *leftop *= inv_norm;
+                                    }
+                                });
+                        },
+                    );
                     next
                 })
                 .collect::<Vec<_>>()
@@ -4246,8 +4270,53 @@ mod solver {
             self.hear.push((pos, v));
             self.is_pos[pos.0][pos.1] = Some(v > 0);
         }
+        fn from_oil(&mut self, oil_probs: &[OilProb], oils: &[Oil]) -> bool {
+            let mut updated = false;
+            let n = self.is_pos.len();
+            let mut may_gain = vec![vec![false; n]; n];
+            for (oil, oil_prob) in oils.iter().zip(oil_probs.iter()) {
+                let mut can_set_cnt = 0;
+                let mut can_set_pos = (0, 0);
+                for (y0, can_set) in oil_prob.can_set.iter().enumerate() {
+                    for (x0, &can_set) in can_set.iter().enumerate() {
+                        if !can_set {
+                            continue;
+                        }
+                        can_set_cnt += 1;
+                        can_set_pos = (y0, x0);
+                        for &(ry, rx) in oil.at.iter() {
+                            let y = y0 + ry;
+                            let x = x0 + rx;
+                            may_gain[y][x] = true;
+                        }
+                    }
+                }
+                if can_set_cnt == 1 {
+                    let (y0, x0) = can_set_pos;
+                    for &(ry, rx) in oil.at.iter() {
+                        let y = y0 + ry;
+                        let x = x0 + rx;
+                        if self.is_pos[y][x].is_none() {
+                            self.is_pos[y][x] = Some(true);
+                            updated = true;
+                        }
+                    }
+                }
+            }
+            for y in 0..n {
+                for x in 0..n {
+                    if !may_gain[y][x] {
+                        if self.is_pos[y][x].is_none() {
+                            self.is_pos[y][x] = Some(false);
+                            updated = true;
+                        }
+                    }
+                }
+            }
+            updated
+        }
     }
-    const TIME_LIMIT: usize = 2500;
+    const TIME_LIMIT: usize = 3000;
     const NEXT_EPS: f64 = 0.01;
     impl Solver {
         pub fn solve(&self) {
@@ -4272,13 +4341,8 @@ mod solver {
                     pos
                 };
                 predicts.heard(pos);
+                self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 remain -= 1;
-                pivot_oil
-                    .iter_mut()
-                    .zip(self.oils.iter())
-                    .for_each(|(p, o)| {
-                        p.from_predicted(o, &predicts);
-                    });
                 let mut pivot_field = self.propagate(&pivot_oil);
 
                 let lim_t = TIME_LIMIT * (tot_loop - remain + 1) / tot_loop;
@@ -4297,6 +4361,22 @@ mod solver {
                     if self.try_answer(&pivot_field, &predicts) {
                         remain -= 1;
                     }
+                }
+            }
+        }
+        fn equilibrium(&self, oils: &[Oil], oil_probs: &mut [OilProb], predicts: &mut Predicts) {
+            loop {
+                let mut updated = false;
+                for (oil_prob, oil) in oil_probs.iter_mut().zip(oils.iter()) {
+                    if oil_prob.from_predicted(oil, predicts) {
+                        updated = true;
+                    }
+                }
+                if predicts.from_oil(oil_probs, oils) {
+                    updated = true;
+                }
+                if !updated {
+                    break;
                 }
             }
         }
@@ -4323,7 +4403,7 @@ mod solver {
             for (oi, (oil, oil_prob)) in self.oils.iter().zip(oil_probs.iter()).enumerate() {
                 let mut rise = vec![vec![0.0; self.n]; self.n];
                 // for each oil positon
-                for (y0, prob_row) in oil_prob.probs.iter().enumerate() {
+                for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
                     for (x0, &oil_prob) in prob_row.iter().enumerate() {
                         // field position
                         for &(ry, rx) in oil.at.iter() {
