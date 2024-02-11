@@ -4225,9 +4225,45 @@ mod solver {
                 probs: vec![vec![vec![0.0; m + 1]; n]; n],
             }
         }
-        fn eval(&self, predicts: &Predicts) -> (Option<f64>, Vec<(usize, usize)>) {
+        fn uncertains(
+            &self,
+            predicts: &Predicts,
+            rand: &mut XorShift64,
+        ) -> BTreeSet<(usize, usize)> {
+            if false {
+                let which = rand.next_usize() % 4;
+                let mut cands = vec![];
+                for (y, field) in self.probs.iter().enumerate() {
+                    for (x, field) in field.iter().enumerate() {
+                        if predicts.is_pos[y][x].is_some() {
+                            continue;
+                        }
+                        let eval1 = match which {
+                            0 => field[0],
+                            1 => 1.0 - field[0],
+                            _ => 100.0,
+                        };
+                        if eval1 < 1e-4 {
+                            cands.push((eval1, (y, x)));
+                        }
+                    }
+                }
+                cands.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                let mut evals = cands.iter().map(|x| x.0).collect::<Vec<_>>();
+                let mut cands = cands.into_iter().map(|x| x.1).collect::<Vec<_>>();
+                while predicts
+                    .hear
+                    .contains_key(&cands.iter().copied().collect::<BTreeSet<_>>())
+                {
+                    cands.pop();
+                    evals.pop();
+                }
+                if cands.len() > 1 {
+                    return cands.iter().copied().collect::<BTreeSet<_>>();
+                }
+            }
             let mut eval = None;
-            let mut eval_pos = (0, 0);
+            let mut point = (0, 0);
             for (y, field) in self.probs.iter().enumerate() {
                 for (x, field) in field.iter().enumerate() {
                     if predicts.is_pos[y][x].is_some() {
@@ -4235,15 +4271,29 @@ mod solver {
                     }
                     let eval1 = (field[0] - 0.5).abs();
                     if eval.chmin(eval1) {
-                        eval_pos = (y, x);
+                        point = (y, x)
                     }
                 }
             }
-            (eval, vec![eval_pos])
+            let mut ret = BTreeSet::new();
+            ret.insert(point);
+            ret
+        }
+        fn eval(&self, predicts: &Predicts) -> Option<f64> {
+            let mut eval = None;
+            for (y, field) in self.probs.iter().enumerate() {
+                for (x, field) in field.iter().enumerate() {
+                    if predicts.is_pos[y][x].is_some() {
+                        continue;
+                    }
+                    let eval1 = (field[0] - 0.5).abs();
+                    eval.chmin(eval1);
+                }
+            }
+            eval
         }
         fn may_fin(&self, predicts: &Predicts) -> bool {
-            let (eval, _) = self.eval(predicts);
-            if let Some(eval) = eval {
+            if let Some(eval) = self.eval(predicts) {
                 eval > 0.25
             } else {
                 true
@@ -4251,18 +4301,18 @@ mod solver {
         }
     }
     struct Predicts {
-        hear: Vec<(Vec<(usize, usize)>, f64)>,
+        hear: BTreeMap<BTreeSet<(usize, usize)>, f64>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
         fn new(n: usize) -> Self {
             Self {
-                hear: vec![],
+                hear: BTreeMap::new(),
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, pos: Vec<(usize, usize)>) {
-            fn predict(pos: &[(usize, usize)]) -> f64 {
+        fn heard(&mut self, pos: BTreeSet<(usize, usize)>) {
+            fn predict(pos: &BTreeSet<(usize, usize)>) -> f64 {
                 print!("q {}", pos.len());
                 for pos in pos.iter() {
                     print!(" {} {}", pos.0, pos.1);
@@ -4272,9 +4322,10 @@ mod solver {
             }
             let v = predict(&pos);
             if pos.len() == 1 {
-                self.is_pos[pos[0].0][pos[0].1] = Some(v > 0.5);
+                let &pos = pos.iter().next().unwrap();
+                self.is_pos[pos.0][pos.1] = Some(v > 0.5);
             }
-            self.hear.push((pos, v));
+            self.hear.insert(pos, v);
         }
         fn from_oil(&mut self, oil_probs: &[OilProb], oils: &[Oil]) -> bool {
             let mut updated = false;
@@ -4338,7 +4389,7 @@ mod solver {
             let mut remain = tot_loop;
 
             while remain > 0 {
-                let pred_pos = self.next_pred_pos(&pivot_oil, &predicts);
+                let pred_pos = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
                 predicts.heard(pred_pos);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 remain -= 1;
@@ -4363,13 +4414,17 @@ mod solver {
                 }
             }
         }
-        fn next_pred_pos(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Vec<(usize, usize)> {
+        fn next_pred_pos(
+            &self,
+            oil_probs: &[OilProb],
+            predicts: &Predicts,
+            rand: &mut XorShift64,
+        ) -> BTreeSet<(usize, usize)> {
             let field = self.propagate(&oil_probs);
-            let (pivot_eval, pos) = field.eval(&predicts);
-            if pivot_eval.is_none() {
+            if field.eval(&predicts).is_none() {
                 assert!(self.try_answer(&field, &predicts));
             }
-            pos
+            field.uncertains(&predicts, rand)
         }
         fn equilibrium(&self, oils: &[Oil], oil_probs: &mut [OilProb], predicts: &mut Predicts) {
             loop {
