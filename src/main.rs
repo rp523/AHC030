@@ -4125,29 +4125,31 @@ mod solver {
         probs: Vec<Vec<f64>>,
     }
     impl OilProb {
-        fn predicted(&mut self, oil: &Oil, predicts: &Predicts) {
+        fn from_predicted(&mut self, oil: &Oil, predicts: &Predicts) {
             let h = self.probs.len();
             let w = self.probs[0].len();
-            let mut can_set = vec![vec![true; w]; h];
+            let mut can_set = vec![vec![false; w]; h];
+            let mut valid_norm = 0.0;
             for y0 in 0..h {
                 for x0 in 0..w {
+                    let mut can_set_here = true;
                     'try_set: for &(ry, rx) in oil.at.iter() {
                         let y = y0 + ry;
                         let x = x0 + rx;
                         if let Some(is_pos) = predicts.is_pos[y][x] {
                             if !is_pos {
-                                can_set[y0][x0] = false;
+                                can_set_here = false;
                                 break 'try_set;
                             }
                         }
                     }
+                    can_set[y0][x0] = can_set_here;
+                    if can_set_here {
+                        valid_norm += self.probs[y0][x0];
+                    }
                 }
             }
-            let corr = 1.0
-                / (can_set
-                    .iter()
-                    .map(|can_set| can_set.iter().filter(|&&b| b).count())
-                    .sum::<usize>()) as f64;
+            let corr = 1.0 / valid_norm;
             for y0 in 0..h {
                 for x0 in 0..w {
                     if can_set[y0][x0] {
@@ -4274,7 +4276,7 @@ mod solver {
                     .iter_mut()
                     .zip(self.oils.iter())
                     .for_each(|(p, o)| {
-                        p.predicted(o, &predicts);
+                        p.from_predicted(o, &predicts);
                     });
                 let mut pivot_field = self.propagate(&pivot_oil);
 
