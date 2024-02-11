@@ -4385,17 +4385,18 @@ mod solver {
                 .iter()
                 .map(|oil| OilProb::new(self.n, oil))
                 .collect::<Vec<_>>();
-            let tot_loop = 2 * self.n * self.n;
-            let mut remain = tot_loop;
+            let mut tot_plan = self.n * self.n * 3 / 4;
+            let tot = 2 * self.n * self.n;
+            let mut proceed = 0;
 
-            while remain > 0 {
+            while proceed < tot {
                 let pred_pos = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
                 predicts.heard(pred_pos);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
-                remain -= 1;
+                proceed += 1;
                 let mut pivot_field = self.propagate(&pivot_oil);
 
-                let lim_t = TIME_LIMIT * (tot_loop - remain + 1) / tot_loop;
+                let lim_t = TIME_LIMIT * (proceed + 1) / tot_plan;
                 let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
                 //eprintln!("{} {} {} {}", tot_loop, remain, self.t0.elapsed().as_millis() as usize , lim_t);
                 while (self.t0.elapsed().as_millis() as usize) < lim_t {
@@ -4407,9 +4408,10 @@ mod solver {
                         pivot_field = next_field;
                     }
                 }
-                if remain % 10 == 0 && pivot_field.may_fin(&predicts) {
+                if proceed % 10 == 0 && proceed < tot && pivot_field.may_fin(&predicts) {
                     if self.try_answer(&pivot_field, &predicts) {
-                        remain -= 1;
+                        proceed += 1;
+                        tot_plan += 1;
                     }
                 }
             }
