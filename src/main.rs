@@ -4225,7 +4225,7 @@ mod solver {
                 probs: vec![vec![vec![0.0; m + 1]; n]; n],
             }
         }
-        fn eval(&self, predicts: &Predicts) -> (Option<f64>, (usize, usize)) {
+        fn eval(&self, predicts: &Predicts) -> (Option<f64>, Vec<(usize, usize)>) {
             let mut eval = None;
             let mut eval_pos = (0, 0);
             for (y, field) in self.probs.iter().enumerate() {
@@ -4239,7 +4239,7 @@ mod solver {
                     }
                 }
             }
-            (eval, eval_pos)
+            (eval, vec![eval_pos])
         }
         fn may_fin(&self, predicts: &Predicts) -> bool {
             let (eval, _) = self.eval(predicts);
@@ -4251,7 +4251,7 @@ mod solver {
         }
     }
     struct Predicts {
-        hear: Vec<((usize, usize), usize)>,
+        hear: Vec<(Vec<(usize, usize)>, f64)>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
@@ -4261,14 +4261,20 @@ mod solver {
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, pos: (usize, usize)) {
-            fn predict(pos: (usize, usize)) -> usize {
-                println!("q 1 {} {}", pos.0, pos.1);
-                read::<usize>()
+        fn heard(&mut self, pos: Vec<(usize, usize)>) {
+            fn predict(pos: &[(usize, usize)]) -> f64 {
+                print!("q {}", pos.len());
+                for pos in pos.iter() {
+                    print!(" {} {}", pos.0, pos.1);
+                }
+                println!();
+                read::<f64>()
             }
-            let v = predict(pos);
+            let v = predict(&pos);
+            if pos.len() == 1 {
+                self.is_pos[pos[0].0][pos[0].1] = Some(v > 0.5);
+            }
             self.hear.push((pos, v));
-            self.is_pos[pos.0][pos.1] = Some(v > 0);
         }
         fn from_oil(&mut self, oil_probs: &[OilProb], oils: &[Oil]) -> bool {
             let mut updated = false;
@@ -4332,15 +4338,8 @@ mod solver {
             let mut remain = tot_loop;
 
             while remain > 0 {
-                let pos = {
-                    let pivot_field_t = self.propagate(&pivot_oil);
-                    let (pivot_eval, pos) = pivot_field_t.eval(&predicts);
-                    if pivot_eval.is_none() {
-                        assert!(self.try_answer(&pivot_field_t, &predicts));
-                    }
-                    pos
-                };
-                predicts.heard(pos);
+                let pred_pos = self.next_pred_pos(&pivot_oil, &predicts);
+                predicts.heard(pred_pos);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 remain -= 1;
                 let mut pivot_field = self.propagate(&pivot_oil);
@@ -4364,6 +4363,14 @@ mod solver {
                 }
             }
         }
+        fn next_pred_pos(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Vec<(usize, usize)> {
+            let field = self.propagate(&oil_probs);
+            let (pivot_eval, pos) = field.eval(&predicts);
+            if pivot_eval.is_none() {
+                assert!(self.try_answer(&field, &predicts));
+            }
+            pos
+        }
         fn equilibrium(&self, oils: &[Oil], oil_probs: &mut [OilProb], predicts: &mut Predicts) {
             loop {
                 let mut updated = false;
@@ -4381,14 +4388,26 @@ mod solver {
             }
         }
         fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
+            let exp_map = (0..self.n)
+                .map(|y| {
+                    (0..self.n)
+                        .map(|x| {
+                            field.probs[y][x]
+                                .iter()
+                                .enumerate()
+                                .map(|(mi, &p)| mi as f64 * p)
+                                .sum::<f64>()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
             let mut loss = 0.0;
-            for &((y, x), v) in predicts.hear.iter() {
-                let ex = field.probs[y][x]
-                    .iter()
-                    .enumerate()
-                    .map(|(mi, &p)| mi as f64 * p)
-                    .sum::<f64>();
-                let delta = ex - v as f64;
+            for (pos, v) in predicts.hear.iter() {
+                let mut exp_sum = 0.0;
+                for &(y, x) in pos.iter() {
+                    exp_sum += exp_map[y][x];
+                }
+                let delta = exp_sum - v;
                 loss += delta * delta;
             }
             loss
