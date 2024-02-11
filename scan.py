@@ -39,7 +39,10 @@ def main():
                 score_worst = score
                 score_worst_case = i
             f.write("{}\n".format(score))
-            #print(i, score, dt)
+            if False:
+                score_ave = score_sum / norm
+                print(i, score, dt)
+                print("ave", score_ave, "worst", score_worst, score_worst_case, "slow", time_max, time_max_case)
     score_ave = score_sum / norm
     print("ave", score_ave, "worst", score_worst, score_worst_case, "slow", time_max, time_max_case)
 
