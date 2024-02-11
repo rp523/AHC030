@@ -4412,7 +4412,7 @@ mod solver {
                 predicts.heard(pred_pos);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 proceed += 1;
-                let mut pivot_field = self.propagate(&pivot_oil);
+                let pivot_field = self.propagate(&pivot_oil);
 
                 let lim_t = TIME_LIMIT * (proceed + 1) / tot_plan;
                 let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
@@ -4423,10 +4423,10 @@ mod solver {
                     let next_loss = self.calc_loss(&predicts, &next_field);
                     if pivot_loss.chmin(next_loss) {
                         pivot_oil = next_oil;
-                        pivot_field = next_field;
+                        //pivot_field = next_field;
                     }
                 }
-                if proceed % 10 == 0 && proceed < tot && pivot_field.may_fin(&predicts) {
+                if proceed % 10 == 0 && proceed < tot && self.may_fin_oil(&pivot_oil) {
                     let ans_oils = pivot_oil
                         .iter()
                         .map(|oil| oil.gen_max())
@@ -4438,6 +4438,28 @@ mod solver {
                     }
                 }
             }
+        }
+        fn may_fin_oil(&self, oil_probs: &[OilProb]) -> bool {
+            for oil_prob in oil_probs.iter() {
+                let mut top = 0.0;
+                let mut nex = 0.0;
+                for (p, b) in oil_prob.leftop.iter().zip(oil_prob.can_set.iter()) {
+                    for (&p, &b) in p.iter().zip(b.iter()) {
+                        if b {
+                            if top < p {
+                                nex = top;
+                                top = p;
+                            } else if nex < p {
+                                nex = p;
+                            }
+                        }
+                    }
+                }
+                if nex > 0.0 && top - nex < 5e-2 {
+                    return false;
+                }
+            }
+            true
         }
         fn next_pred_pos(
             &self,
