@@ -4172,18 +4172,18 @@ mod solver {
                 .iter()
                 .map(|oil| {
                     let mut next = oil.clone();
-                    let mut sm = 0.0;
+                    let mut norm = 0.0;
                     next.probs.iter_mut().for_each(|row| {
                         row.iter_mut().for_each(|x| {
                             let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
                             *x = (*x + noise).clamp(0.0, 1.0);
-                            sm += *x;
+                            norm += *x;
                         })
                     });
-                    let sm = sm;
+                    let inv_norm = 1.0 / norm;
                     next.probs.iter_mut().for_each(|row| {
                         row.iter_mut().for_each(|x| {
-                            *x /= sm;
+                            *x *= inv_norm;
                         });
                     });
                     next
@@ -4237,18 +4237,19 @@ mod solver {
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn insert(&mut self, pos: (usize, usize), sm: usize) {
-            self.hear.push((pos, sm));
-            self.is_pos[pos.0][pos.1] = Some(sm > 0);
+        fn heard(&mut self, pos: (usize, usize)) {
+            fn predict(pos: (usize, usize)) -> usize {
+                println!("q 1 {} {}", pos.0, pos.1);
+                read::<usize>()
+            }
+            let v = predict(pos);
+            self.hear.push((pos, v));
+            self.is_pos[pos.0][pos.1] = Some(v > 0);
         }
     }
     const TIME_LIMIT: usize = 2500;
     const NEXT_EPS: f64 = 0.01;
     impl Solver {
-        fn predict(pos: (usize, usize)) -> usize {
-            println!("q 1 {} {}", pos.0, pos.1);
-            read::<usize>()
-        }
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
             let mut rand = XorShift64::new();
@@ -4270,7 +4271,7 @@ mod solver {
                     }
                     pos
                 };
-                predicts.insert(pos, Self::predict(pos));
+                predicts.heard(pos);
                 remain -= 1;
                 pivot_oil
                     .iter_mut()
@@ -4301,13 +4302,13 @@ mod solver {
         }
         fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
             let mut loss = 0.0;
-            for &((y, x), sm) in predicts.hear.iter() {
+            for &((y, x), v) in predicts.hear.iter() {
                 let ex = field.probs[y][x]
                     .iter()
                     .enumerate()
                     .map(|(mi, &p)| mi as f64 * p)
                     .sum::<f64>();
-                let delta = ex - sm as f64;
+                let delta = ex - v as f64;
                 loss += delta * delta;
             }
             loss
