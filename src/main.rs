@@ -4128,6 +4128,24 @@ mod solver {
         can_set: Vec<Vec<bool>>,
     }
     impl OilProb {
+        fn gen_max(&self) -> Self {
+            let mut ret = self.clone();
+            let mut ev = None;
+            let mut bst = (0, 0);
+            for (y, p) in ret.leftop.iter().enumerate() {
+                for (x, &p) in p.iter().enumerate() {
+                    if ev.chmax(p) {
+                        bst = (y, x);
+                    }
+                }
+            }
+            for (y, p) in ret.leftop.iter_mut().enumerate() {
+                for (x, p) in p.iter_mut().enumerate() {
+                    *p = if (y, x) == bst { 1.0 } else { 0.0 };
+                }
+            }
+            ret
+        }
         fn from_predicted(&mut self, oil: &Oil, predicts: &Predicts) -> bool {
             let mut updated = false;
             let h = self.leftop.len();
@@ -4409,7 +4427,12 @@ mod solver {
                     }
                 }
                 if proceed % 10 == 0 && proceed < tot && pivot_field.may_fin(&predicts) {
-                    if self.try_answer(&pivot_field, &predicts) {
+                    let ans_oils = pivot_oil
+                        .iter()
+                        .map(|oil| oil.gen_max())
+                        .collect::<Vec<_>>();
+                    let ans_field = self.propagate(&ans_oils);
+                    if self.try_answer(&ans_field, &predicts) {
                         proceed += 1;
                         tot_plan += 1;
                     }
