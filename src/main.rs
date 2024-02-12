@@ -4235,12 +4235,14 @@ mod solver {
     }
     #[derive(Clone)]
     struct FieldProb {
-        probs: Vec<Vec<Vec<f64>>>,
+        p0: Vec<Vec<f64>>,
+        ex: Vec<Vec<f64>>,
     }
     impl FieldProb {
-        fn new(n: usize, m: usize) -> Self {
+        fn new(n: usize) -> Self {
             Self {
-                probs: vec![vec![vec![0.0; m + 1]; n]; n],
+                p0: vec![vec![1.0; n]; n],
+                ex: vec![vec![0.0; n]; n],
             }
         }
         fn uncertains(
@@ -4251,14 +4253,14 @@ mod solver {
             if false {
                 let which = rand.next_usize() % 4;
                 let mut cands = vec![];
-                for (y, field) in self.probs.iter().enumerate() {
-                    for (x, field) in field.iter().enumerate() {
+                for (y, p0) in self.p0.iter().enumerate() {
+                    for (x, &p0) in p0.iter().enumerate() {
                         if predicts.is_pos[y][x].is_some() {
                             continue;
                         }
                         let eval1 = match which {
-                            0 => field[0],
-                            1 => 1.0 - field[0],
+                            0 => p0,
+                            1 => 1.0 - p0,
                             _ => 100.0,
                         };
                         if eval1 < 1e-4 {
@@ -4282,12 +4284,12 @@ mod solver {
             }
             let mut eval = None;
             let mut point = (0, 0);
-            for (y, field) in self.probs.iter().enumerate() {
-                for (x, field) in field.iter().enumerate() {
+            for (y, p0) in self.p0.iter().enumerate() {
+                for (x, p0) in p0.iter().enumerate() {
                     if predicts.is_pos[y][x].is_some() {
                         continue;
                     }
-                    let eval1 = (field[0] - 0.5).abs();
+                    let eval1 = (p0 - 0.5).abs();
                     if eval.chmin(eval1) {
                         point = (y, x)
                     }
@@ -4299,12 +4301,12 @@ mod solver {
         }
         fn eval(&self, predicts: &Predicts) -> Option<f64> {
             let mut eval = None;
-            for (y, field) in self.probs.iter().enumerate() {
-                for (x, field) in field.iter().enumerate() {
+            for (y, p0) in self.p0.iter().enumerate() {
+                for (x, &p0) in p0.iter().enumerate() {
                     if predicts.is_pos[y][x].is_some() {
                         continue;
                     }
-                    let eval1 = (field[0] - 0.5).abs();
+                    let eval1 = (p0 - 0.5).abs();
                     eval.chmin(eval1);
                 }
             }
@@ -4434,15 +4436,9 @@ mod solver {
                         let c1 = s[v % 16];
                         (c0, c1)
                     }
-                    for (y, p) in pivot_field.probs.iter().enumerate() {
-                        for (x, p) in p.iter().enumerate() {
-                            let ex = p
-                                .iter()
-                                .enumerate()
-                                .map(|(mi, p)| mi as f64 * p)
-                                .sum::<f64>()
-                                .clamp(0.0, 1.0);
-                            let v = ((ex * 255.0) as usize).clamp(0, 255);
+                    for (y, p0) in pivot_field.p0.iter().enumerate() {
+                        for (x, &p0) in p0.iter().enumerate() {
+                            let v = (((1.0 - p0) * 255.0) as usize).clamp(0, 255);
                             let r = level(255 - v);
                             let g = level(255);
                             let b = level(255 - v);
@@ -4514,24 +4510,11 @@ mod solver {
             }
         }
         fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
-            let exp_map = (0..self.n)
-                .map(|y| {
-                    (0..self.n)
-                        .map(|x| {
-                            field.probs[y][x]
-                                .iter()
-                                .enumerate()
-                                .map(|(mi, &p)| mi as f64 * p)
-                                .sum::<f64>()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
             let mut loss = 0.0;
             for (pos, v) in predicts.hear.iter() {
                 let mut exp_sum = 0.0;
                 for &(y, x) in pos.iter() {
-                    exp_sum += exp_map[y][x];
+                    exp_sum += field.ex[y][x];
                 }
                 let delta = exp_sum - v;
                 loss += delta * delta;
@@ -4542,13 +4525,8 @@ mod solver {
             loss
         }
         fn propagate(&self, oil_probs: &[OilProb]) -> FieldProb {
-            let mut dp = FieldProb::new(self.n, self.m);
-            for y in 0..self.n {
-                for x in 0..self.n {
-                    dp.probs[y][x][0] = 1.0;
-                }
-            }
-            for (oi, (oil, oil_prob)) in self.oils.iter().zip(oil_probs.iter()).enumerate() {
+            let mut dp = FieldProb::new(self.n);
+            for (oil, oil_prob) in self.oils.iter().zip(oil_probs.iter()) {
                 let mut rise = vec![vec![0.0; self.n]; self.n];
                 // for each oil positon
                 for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
@@ -4563,12 +4541,8 @@ mod solver {
                 }
                 for y in 0..self.n {
                     for x in 0..self.n {
-                        for pm in (0..=oi).rev() {
-                            let nm = pm + 1;
-                            let mov = dp.probs[y][x][pm] * rise[y][x];
-                            dp.probs[y][x][pm] -= mov;
-                            dp.probs[y][x][nm] += mov;
-                        }
+                        dp.p0[y][x] *= 1.0 - rise[y][x];
+                        dp.ex[y][x] += rise[y][x];
                     }
                 }
             }
@@ -4576,13 +4550,13 @@ mod solver {
         }
         fn try_answer(&self, field: &FieldProb, predicts: &Predicts) -> bool {
             let mut ans = vec![];
-            for (y, field) in field.probs.iter().enumerate() {
-                for (x, field) in field.iter().enumerate() {
+            for (y, p0) in field.p0.iter().enumerate() {
+                for (x, &p0) in p0.iter().enumerate() {
                     if let Some(is_pos) = predicts.is_pos[y][x] {
                         if is_pos {
                             ans.push((y, x));
                         }
-                    } else if field[0] < 0.5 {
+                    } else if p0 < 0.5 {
                         ans.push((y, x));
                     }
                 }
