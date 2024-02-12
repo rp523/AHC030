@@ -4357,7 +4357,7 @@ mod solver {
                     print!(" {} {}", pos.0, pos.1);
                 }
                 println!();
-                read::<f64>()
+                read::<f64>() / pos.len() as f64
             }
             let v = predict(&pos);
             if pos.len() == 1 {
@@ -4543,7 +4543,8 @@ mod solver {
                 for &(y, x) in pos.iter() {
                     exp_sum += field.ex[y][x];
                 }
-                let delta = exp_sum - v;
+                let exp_ave = exp_sum / pos.len() as f64;
+                let delta = exp_ave - v;
                 loss += delta * delta;
                 if (exp_sum.clamp(0.0, 1.0) - 0.5) * (v - 0.5) < 0.0 {
                     loss += (self.n * self.n * self.m).pow(2) as f64;
