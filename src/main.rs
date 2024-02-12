@@ -4096,23 +4096,38 @@ mod solver {
 
     use super::*;
     struct Oil {
-        at: Vec<(usize, usize)>,
+        at: Vec<Vec<(usize, usize)>>,
+        sz: usize,
         h: usize,
         w: usize,
     }
     impl Oil {
         fn new() -> Self {
-            let mut at = vec![];
+            let mut pos = vec![];
             let mut h = 0;
             let mut w = 0;
-            for _ in 0..read::<usize>() {
+            let sz = read::<usize>();
+            for _ in 0..sz {
                 let y = read::<usize>();
                 let x = read::<usize>();
-                at.push((y, x));
+                pos.push((y, x));
                 h.chmax(y + 1);
                 w.chmax(x + 1);
             }
-            Self { at, h, w }
+            pos.sort();
+            let mut at = vec![vec![]; h];
+            for (y, x) in pos.iter().copied() {
+                if let Some((_xb, xe)) = at[y].iter_mut().next_back() {
+                    if *xe == x {
+                        *xe += 1;
+                    } else {
+                        at[y].push((x, x + 1));
+                    }
+                } else {
+                    at[y].push((x, x + 1));
+                }
+            }
+            Self { at, sz, h, w }
         }
     }
     pub struct Solver {
@@ -4154,13 +4169,17 @@ mod solver {
             for y0 in 0..h {
                 for x0 in 0..w {
                     let mut can_set_here = true;
-                    'try_set: for &(ry, rx) in oil.at.iter() {
-                        let y = y0 + ry;
-                        let x = x0 + rx;
-                        if let Some(is_pos) = predicts.is_pos[y][x] {
-                            if !is_pos {
-                                can_set_here = false;
-                                break 'try_set;
+                    'try_set: for (ry, row) in oil.at.iter().enumerate() {
+                        for &(xb, xe) in row.iter() {
+                            for rx in xb..xe {
+                                let y = y0 + ry;
+                                let x = x0 + rx;
+                                if let Some(is_pos) = predicts.is_pos[y][x] {
+                                    if !is_pos {
+                                        can_set_here = false;
+                                        break 'try_set;
+                                    }
+                                }
                             }
                         }
                     }
@@ -4361,21 +4380,29 @@ mod solver {
                         }
                         can_set_cnt += 1;
                         can_set_pos = (y0, x0);
-                        for &(ry, rx) in oil.at.iter() {
-                            let y = y0 + ry;
-                            let x = x0 + rx;
-                            may_gain[y][x] = true;
+                        for (ry, row) in oil.at.iter().enumerate() {
+                            for &(xb, xe) in row.iter() {
+                                for rx in xb..xe {
+                                    let y = y0 + ry;
+                                    let x = x0 + rx;
+                                    may_gain[y][x] = true;
+                                }
+                            }
                         }
                     }
                 }
                 if can_set_cnt == 1 {
                     let (y0, x0) = can_set_pos;
-                    for &(ry, rx) in oil.at.iter() {
-                        let y = y0 + ry;
-                        let x = x0 + rx;
-                        if self.is_pos[y][x].is_none() {
-                            self.is_pos[y][x] = Some(true);
-                            updated = true;
+                    for (ry, row) in oil.at.iter().enumerate() {
+                        for &(xb, xe) in row.iter() {
+                            for rx in xb..xe {
+                                let y = y0 + ry;
+                                let x = x0 + rx;
+                                if self.is_pos[y][x].is_none() {
+                                    self.is_pos[y][x] = Some(true);
+                                    updated = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -4527,16 +4554,22 @@ mod solver {
         fn propagate(&self, oil_probs: &[OilProb]) -> FieldProb {
             let mut dp = FieldProb::new(self.n);
             for (oil, oil_prob) in self.oils.iter().zip(oil_probs.iter()) {
-                let mut rise = vec![vec![0.0; self.n]; self.n];
+                let mut rise = vec![vec![0.0; self.n + 1]; self.n + 1];
                 // for each oil positon
                 for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
                     for (x0, &oil_prob) in prob_row.iter().enumerate() {
                         // field position
-                        for &(ry, rx) in oil.at.iter() {
-                            let y = y0 + ry;
-                            let x = x0 + rx;
-                            rise[y][x] += oil_prob;
+                        for (ry, row) in oil.at.iter().enumerate() {
+                            for &(xb, xe) in row.iter() {
+                                rise[y0 + ry][x0 + xb] += oil_prob;
+                                rise[y0 + ry][x0 + xe] -= oil_prob;
+                            }
                         }
+                    }
+                }
+                for y in 0..self.n {
+                    for x in 1..self.n {
+                        rise[y][x] += rise[y][x - 1];
                     }
                 }
                 for y in 0..self.n {
@@ -4561,8 +4594,8 @@ mod solver {
                     }
                 }
             }
-            let min_len = self.oils.iter().map(|oil| oil.at.len()).min().unwrap();
-            let max_len = self.oils.iter().map(|oil| oil.at.len()).sum::<usize>();
+            let min_len = self.oils.iter().map(|oil| oil.sz).min().unwrap();
+            let max_len = self.oils.iter().map(|oil| oil.sz).sum::<usize>();
             if min_len <= ans.len() && ans.len() <= max_len {
                 if self.answer(ans) {
                     std::process::exit(0);
