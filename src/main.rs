@@ -4554,7 +4554,7 @@ mod solver {
         fn propagate(&self, oil_probs: &[OilProb]) -> FieldProb {
             let mut dp = FieldProb::new(self.n);
             for (oil, oil_prob) in self.oils.iter().zip(oil_probs.iter()) {
-                let mut rise = vec![vec![0.0; self.n + 1]; self.n + 1];
+                let mut rise = vec![vec![0.0; self.n + 1]; self.n];
                 // for each oil positon
                 for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
                     for (x0, &oil_prob) in prob_row.iter().enumerate() {
