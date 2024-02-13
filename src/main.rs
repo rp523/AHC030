@@ -4260,53 +4260,49 @@ mod solver {
     struct FieldProb {
         p0: Vec<Vec<f64>>,
         ex: Vec<Vec<f64>>,
+        ex_cum: Vec<Vec<f64>>,
+        var_cum: Vec<Vec<f64>>,
     }
     impl FieldProb {
         fn new(n: usize) -> Self {
             Self {
                 p0: vec![vec![1.0; n]; n],
                 ex: vec![vec![0.0; n]; n],
+                ex_cum: vec![vec![0.0; n + 1]; n + 1],
+                var_cum: vec![vec![0.0; n + 1]; n + 1],
             }
         }
-        fn uncertains(
-            &self,
-            predicts: &Predicts,
-            rand: &mut XorShift64,
-        ) -> BTreeSet<(usize, usize)> {
-            if false {
-                let which = rand.next_usize() % 4;
-                let mut cands = vec![];
-                for (y, p0) in self.p0.iter().enumerate() {
-                    for (x, &p0) in p0.iter().enumerate() {
-                        if predicts.is_pos[y][x].is_some() {
-                            continue;
-                        }
-                        let eval1 = match which {
-                            0 => p0,
-                            1 => 1.0 - p0,
-                            _ => 100.0,
-                        };
-                        if eval1 < 1e-4 {
-                            cands.push((eval1, (y, x)));
+        fn uncertains(&self, predicts: &Predicts, rand: &mut XorShift64) -> Rect {
+            let n = self.p0.len();
+            let mut eval = None;
+            let mut ev_rect = Rect::from_point(0, 0);
+            for y0 in 0..n {
+                for y1 in (y0 + 1)..=n {
+                    for x0 in 0..n {
+                        for x1 in (x0 + 1)..=n {
+                            let rect = Rect { y0, x0, y1, x1 };
+                            if predicts.is_pos_any(&rect) {
+                                continue;
+                            }
+                            if predicts.is_heard_any(&rect) {
+                                continue;
+                            }
+                            if predicts.hear.contains_key(&rect) {
+                                continue;
+                            }
+                            let var_sum = (self.var_cum[y0][x0] + self.var_cum[y1][x1])
+                                - (self.var_cum[y0][x1] + self.var_cum[y1][x0]);
+                            let var_ave = var_sum / (rect.area() as f64).powf(1.0);
+                            if eval.chmax(var_ave) {
+                                ev_rect = rect;
+                            }
                         }
                     }
                 }
-                cands.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
-                let mut evals = cands.iter().map(|x| x.0).collect::<Vec<_>>();
-                let mut cands = cands.into_iter().map(|x| x.1).collect::<Vec<_>>();
-                while predicts
-                    .hear
-                    .contains_key(&cands.iter().copied().collect::<BTreeSet<_>>())
-                {
-                    cands.pop();
-                    evals.pop();
-                }
-                if cands.len() > 1 {
-                    return cands.iter().copied().collect::<BTreeSet<_>>();
-                }
             }
-            let mut eval = None;
-            let mut point = (0, 0);
+            if eval.is_some() {
+                return ev_rect;
+            }
             for (y, p0) in self.p0.iter().enumerate() {
                 for (x, p0) in p0.iter().enumerate() {
                     if predicts.is_pos[y][x].is_some() {
@@ -4314,13 +4310,11 @@ mod solver {
                     }
                     let eval1 = (p0 - 0.5).abs();
                     if eval.chmin(eval1) {
-                        point = (y, x)
+                        ev_rect = Rect::from_point(y, x);
                     }
                 }
             }
-            let mut ret = BTreeSet::new();
-            ret.insert(point);
-            ret
+            ev_rect
         }
         fn eval(&self, predicts: &Predicts) -> Option<f64> {
             let mut eval = None;
@@ -4343,38 +4337,127 @@ mod solver {
             }
         }
     }
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
+    struct Rect {
+        y0: usize,
+        x0: usize,
+        y1: usize,
+        x1: usize,
+    }
+    impl Rect {
+        fn area(&self) -> usize {
+            (self.y1 - self.y0) * (self.x1 - self.x0)
+        }
+        fn from_point(y0: usize, x0: usize) -> Self {
+            Self {
+                y0,
+                x0,
+                y1: y0 + 1,
+                x1: x0 + 1,
+            }
+        }
+    }
     struct Predicts {
-        hear: BTreeMap<BTreeSet<(usize, usize)>, f64>,
+        hear: BTreeMap<Rect, f64>,
+        is_pos_cum: Vec<Vec<usize>>,
+        is_heard_cum: Vec<Vec<usize>>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
         fn new(n: usize) -> Self {
             Self {
                 hear: BTreeMap::new(),
+                is_pos_cum: vec![vec![0; n + 1]; n + 1],
+                is_heard_cum: vec![vec![0; n + 1]; n + 1],
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, pos: BTreeSet<(usize, usize)>, eps: f64) {
-            fn predict(pos: &BTreeSet<(usize, usize)>, eps: f64) -> f64 {
-                print!("q {}", pos.len());
+        fn heard(&mut self, rect: Rect, eps: f64) {
+            fn predict(rect: &Rect, eps: f64) -> f64 {
+                let mut pos = vec![];
+                for y in rect.y0..rect.y1 {
+                    for x in rect.x0..rect.x1 {
+                        pos.push((y, x));
+                    }
+                }
+                let k = pos.len();
+                print!("q {}", k);
                 for pos in pos.iter() {
                     print!(" {} {}", pos.0, pos.1);
                 }
                 println!();
                 let u = read::<f64>();
-                let k = pos.len();
                 if k == 1 {
                     return u;
                 }
                 let v = (u - k as f64 * eps) / (1.0 - 2.0 * eps);
                 v / k as f64
             }
-            let v = predict(&pos, eps);
-            if pos.len() == 1 {
-                let &pos = pos.iter().next().unwrap();
-                self.is_pos[pos.0][pos.1] = Some(v > 0.5);
+            let v = predict(&rect, eps);
+            if rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
+                self.is_pos_update(rect.y0, rect.x0, v > 0.5);
             }
-            self.hear.insert(pos, v);
+
+            let n = self.is_pos.len();
+            // differential
+            for y in 0..n {
+                for x in 0..n {
+                    self.is_heard_cum[y][x] = (self.is_heard_cum[y][x]
+                        + self.is_heard_cum[y + 1][x + 1])
+                        - (self.is_heard_cum[y][x + 1] + self.is_heard_cum[y + 1][x]);
+                }
+            }
+            // add
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    self.is_heard_cum[y][x] += 1;
+                }
+            }
+            // integral
+            for y in (0..n).rev() {
+                for x in (0..n).rev() {
+                    self.is_heard_cum[y][x] = self.is_heard_cum[y][x]
+                        + self.is_heard_cum[y][x + 1]
+                        + self.is_heard_cum[y + 1][x]
+                        - self.is_heard_cum[y + 1][x + 1];
+                }
+            }
+            self.hear.insert(rect, v);
+        }
+        fn is_heard_any(&self, rect: &Rect) -> bool {
+            (self.is_heard_cum[rect.y0][rect.x0] + self.is_heard_cum[rect.y1][rect.x1])
+                - (self.is_heard_cum[rect.y0][rect.x1] + self.is_heard_cum[rect.y1][rect.x0])
+                > 0
+        }
+        fn is_pos_any(&self, rect: &Rect) -> bool {
+            (self.is_pos_cum[rect.y0][rect.x0] + self.is_pos_cum[rect.y1][rect.x1])
+                - (self.is_pos_cum[rect.y0][rect.x1] + self.is_pos_cum[rect.y1][rect.x0])
+                > 0
+        }
+        fn is_pos_update(&mut self, yb: usize, xb: usize, b: bool) -> bool {
+            if self.is_pos[yb][xb] == Some(b) {
+                return false;
+            }
+            // differential
+            for y in 0..=yb {
+                for x in 0..=xb {
+                    self.is_pos_cum[y][x] = (self.is_pos_cum[y][x] + self.is_pos_cum[y + 1][x + 1])
+                        - (self.is_pos_cum[y][x + 1] + self.is_pos_cum[y + 1][x]);
+                }
+            }
+            // add
+            self.is_pos_cum[yb][xb] += 1;
+            // integral
+            for y in (0..=yb).rev() {
+                for x in (0..=xb).rev() {
+                    self.is_pos_cum[y][x] = self.is_pos_cum[y][x]
+                        + self.is_pos_cum[y][x + 1]
+                        + self.is_pos_cum[y + 1][x]
+                        - self.is_pos_cum[y + 1][x + 1];
+                }
+            }
+            self.is_pos[yb][xb] = Some(b);
+            true
         }
         fn from_oil(&mut self, oil_probs: &[OilProb], oils: &[Oil]) -> bool {
             let mut updated = false;
@@ -4408,8 +4491,7 @@ mod solver {
                             for rx in xb..xe {
                                 let y = y0 + ry;
                                 let x = x0 + rx;
-                                if self.is_pos[y][x].is_none() {
-                                    self.is_pos[y][x] = Some(true);
+                                if self.is_pos_update(y, x, true) {
                                     updated = true;
                                 }
                             }
@@ -4420,8 +4502,7 @@ mod solver {
             for y in 0..n {
                 for x in 0..n {
                     if !may_gain[y][x] {
-                        if self.is_pos[y][x].is_none() {
-                            self.is_pos[y][x] = Some(false);
+                        if self.is_pos_update(y, x, false) {
                             updated = true;
                         }
                     }
@@ -4454,8 +4535,8 @@ mod solver {
             let mut proceed = 0;
 
             while proceed < tot {
-                let pred_pos = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
-                predicts.heard(pred_pos, self.eps);
+                let rect = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
+                predicts.heard(rect, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 proceed += 1;
                 let pivot_field = self.propagate(&pivot_oil);
@@ -4534,7 +4615,7 @@ mod solver {
             oil_probs: &[OilProb],
             predicts: &Predicts,
             rand: &mut XorShift64,
-        ) -> BTreeSet<(usize, usize)> {
+        ) -> Rect {
             let field = self.propagate(&oil_probs);
             if field.eval(&predicts).is_none() {
                 assert!(self.try_answer(&field, &predicts));
@@ -4559,14 +4640,12 @@ mod solver {
         }
         fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
             let mut loss = 0.0;
-            for (pos, v) in predicts.hear.iter() {
-                let mut exp_sum = 0.0;
-                for &(y, x) in pos.iter() {
-                    exp_sum += field.ex[y][x];
-                }
-                let exp_ave = exp_sum / pos.len() as f64;
+            for (rect, v) in predicts.hear.iter() {
+                let exp_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
+                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
+                let exp_ave = exp_sum / rect.area() as f64;
                 let delta = exp_ave - v;
-                loss += delta * delta;
+                loss += 0.5 * delta * delta;
             }
             loss
         }
@@ -4578,47 +4657,49 @@ mod solver {
         ) -> Vec<OilProb> {
             let field = self.propagate(oil_probs);
             let mut next_oil_probs = oil_probs.clone();
-            for (predict, &v) in predicts.hear.iter() {
-                let mut exp_sum = 0.0;
-                for &(y, x) in predict.iter() {
-                    if let Some(is_pos) = predicts.is_pos[y][x] {
-                        if !is_pos {
-                            continue;
-                        }
-                    }
-                    exp_sum += field.ex[y][x];
+            let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
+            for (rect, &v) in predicts.hear.iter() {
+                let area = rect.area() as f64;
+                let exp_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
+                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
+                let exp_ave = exp_sum / area;
+                let grad_ave = (v - exp_ave) * NEXT_EPS;
+                let grad_each = grad_ave / area;
+                grads[rect.y0][rect.x0] += grad_each;
+                grads[rect.y0][rect.x1] -= grad_each;
+                grads[rect.y1][rect.x0] -= grad_each;
+                grads[rect.y1][rect.x1] += grad_each;
+            }
+            for y in 0..self.n {
+                for x in 1..self.n {
+                    grads[y][x] += grads[y][x - 1];
                 }
-                let exp_sum = exp_sum;
-                let exp_ave = exp_sum / predict.len() as f64;
-                let ad = (v - exp_ave) * NEXT_EPS;
-                for &(y, x) in predict.iter() {
-                    if let Some(is_pos) = predicts.is_pos[y][x] {
-                        if !is_pos {
-                            continue;
-                        }
-                    }
-                    for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
+            }
+            for x in 0..self.n {
+                for y in 1..self.n {
+                    grads[y][x] += grads[y - 1][x];
+                }
+            }
+            for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
+                for y0 in 0..next_oil_prob.h {
+                    for x0 in 0..next_oil_prob.w {
                         for (ry, row) in oil.at.iter().enumerate() {
                             for &(xb, xe) in row.iter() {
                                 for rx in xb..xe {
-                                    if y >= ry && x >= rx {
-                                        let y0 = y - ry;
-                                        let x0 = x - rx;
-                                        if y0 < next_oil_prob.h && x0 < next_oil_prob.w {
-                                            if next_oil_prob.can_set[y0][x0] {
-                                                let noise = NEXT_EPS * (rand.next_f64() - 0.5);
-                                                next_oil_prob.leftop[y0][x0] =
-                                                    (next_oil_prob.leftop[y0][x0] + ad + noise)
-                                                        .clamp(0.0, 1.0);
-                                            }
-                                        }
+                                    let y = y0 + ry;
+                                    let x = x0 + rx;
+                                    if next_oil_prob.can_set[y0][x0] {
+                                        let noise = NEXT_EPS * (rand.next_f64() - 0.5);
+                                        next_oil_prob.leftop[y0][x0] =
+                                            (next_oil_prob.leftop[y0][x0] + grads[y][x] + noise)
+                                                .clamp(0.0, 1.0);
                                     }
                                 }
                             }
                         }
-                        next_oil_prob.normalize();
                     }
                 }
+                next_oil_prob.normalize();
             }
             next_oil_probs
         }
@@ -4648,6 +4729,16 @@ mod solver {
                         dp.p0[y][x] *= 1.0 - rise[y][x];
                         dp.ex[y][x] += rise[y][x];
                     }
+                }
+            }
+            for y in (0..self.n).rev() {
+                for x in (0..self.n).rev() {
+                    dp.ex_cum[y][x] = dp.ex[y][x] + dp.ex_cum[y][x + 1] + dp.ex_cum[y + 1][x]
+                        - dp.ex_cum[y + 1][x + 1];
+                    let p0 = dp.p0[y][x];
+                    let var = p0 * (1.0 - p0);
+                    dp.var_cum[y][x] = var + dp.var_cum[y][x + 1] + dp.var_cum[y + 1][x]
+                        - dp.var_cum[y + 1][x + 1];
                 }
             }
             dp
