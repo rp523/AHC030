@@ -4461,7 +4461,7 @@ mod solver {
                 let mut upd = 0;
                 while (self.t0.elapsed().as_millis() as usize) < lim_t {
                     tri += 1;
-                    let next_oil = self.greedy_better(&pivot_oil, &predicts);
+                    let next_oil = self.greedy_better(&pivot_oil, &predicts, &mut rand);
                     let next_field = self.propagate(&next_oil);
                     let next_loss = self.calc_loss(&predicts, &next_field);
                     if pivot_loss.chmin(next_loss) {
@@ -4564,7 +4564,12 @@ mod solver {
             }
             loss
         }
-        fn greedy_better(&self, oil_probs: &Vec<OilProb>, predicts: &Predicts) -> Vec<OilProb> {
+        fn greedy_better(
+            &self,
+            oil_probs: &Vec<OilProb>,
+            predicts: &Predicts,
+            rand: &mut XorShift64,
+        ) -> Vec<OilProb> {
             let field = self.propagate(oil_probs);
             let mut next_oil_probs = oil_probs.clone();
             for (predict, &v) in predicts.hear.iter() {
@@ -4595,8 +4600,9 @@ mod solver {
                                         let x0 = x - rx;
                                         if y0 < next_oil_prob.h && x0 < next_oil_prob.w {
                                             if next_oil_prob.can_set[y0][x0] {
+                                                let noise = NEXT_EPS * (rand.next_f64() - 0.5);
                                                 next_oil_prob.leftop[y0][x0] =
-                                                    (next_oil_prob.leftop[y0][x0] + ad)
+                                                    (next_oil_prob.leftop[y0][x0] + ad + noise)
                                                         .clamp(0.0, 1.0);
                                             }
                                         }
