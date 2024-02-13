@@ -4354,16 +4354,22 @@ mod solver {
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, pos: BTreeSet<(usize, usize)>) {
-            fn predict(pos: &BTreeSet<(usize, usize)>) -> f64 {
+        fn heard(&mut self, pos: BTreeSet<(usize, usize)>, eps: f64) {
+            fn predict(pos: &BTreeSet<(usize, usize)>, eps: f64) -> f64 {
                 print!("q {}", pos.len());
                 for pos in pos.iter() {
                     print!(" {} {}", pos.0, pos.1);
                 }
                 println!();
-                read::<f64>() / pos.len() as f64
+                let u = read::<f64>();
+                let k = pos.len();
+                if k == 1 {
+                    return u;
+                }
+                let v = (u - k as f64 * eps) / (1.0 - 2.0 * eps);
+                v / k as f64
             }
-            let v = predict(&pos);
+            let v = predict(&pos, eps);
             if pos.len() == 1 {
                 let &pos = pos.iter().next().unwrap();
                 self.is_pos[pos.0][pos.1] = Some(v > 0.5);
@@ -4449,7 +4455,7 @@ mod solver {
 
             while proceed < tot {
                 let pred_pos = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
-                predicts.heard(pred_pos);
+                predicts.heard(pred_pos, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
                 proceed += 1;
                 let pivot_field = self.propagate(&pivot_oil);
