@@ -4276,30 +4276,6 @@ mod solver {
             let n = self.p0.len();
             let mut eval = None;
             let mut ev_rect = Rect::from_point(0, 0);
-            for y0 in 0..n {
-                for y1 in (y0 + 1)..=n {
-                    for x0 in 0..n {
-                        for x1 in (x0 + 1)..=n {
-                            let rect = Rect { y0, x0, y1, x1 };
-                            if predicts.is_pos_any(&rect) {
-                                continue;
-                            }
-                            if predicts.is_heard_any(&rect) {
-                                continue;
-                            }
-                            if predicts.hear.contains_key(&rect) {
-                                continue;
-                            }
-                            let var_sum = (self.var_cum[y0][x0] + self.var_cum[y1][x1])
-                                - (self.var_cum[y0][x1] + self.var_cum[y1][x0]);
-                            let var_ave = var_sum / (rect.area() as f64).powf(1.0);
-                            if eval.chmax(var_ave) {
-                                ev_rect = rect;
-                            }
-                        }
-                    }
-                }
-            }
             if eval.is_some() {
                 return ev_rect;
             }
@@ -4308,8 +4284,9 @@ mod solver {
                     if predicts.is_pos[y][x].is_some() {
                         continue;
                     }
-                    let eval1 = (p0 - 0.5).abs();
-                    if eval.chmin(eval1) {
+                    let eval1 = (self.var_cum[y][x] + self.var_cum[y + 1][x + 1])
+                        - (self.var_cum[y][x + 1] + self.var_cum[y + 1][x]);
+                    if eval.chmax(eval1) {
                         ev_rect = Rect::from_point(y, x);
                     }
                 }
@@ -4359,16 +4336,12 @@ mod solver {
     }
     struct Predicts {
         hear: BTreeMap<Rect, f64>,
-        is_pos_cum: Vec<Vec<usize>>,
-        is_heard_cum: Vec<Vec<usize>>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
         fn new(n: usize) -> Self {
             Self {
                 hear: BTreeMap::new(),
-                is_pos_cum: vec![vec![0; n + 1]; n + 1],
-                is_heard_cum: vec![vec![0; n + 1]; n + 1],
                 is_pos: vec![vec![None; n]; n],
             }
         }
@@ -4395,66 +4368,13 @@ mod solver {
             }
             let v = predict(&rect, eps);
             if rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
-                self.is_pos_update(rect.y0, rect.x0, v > 0.5);
-            }
-
-            let n = self.is_pos.len();
-            // differential
-            for y in 0..n {
-                for x in 0..n {
-                    self.is_heard_cum[y][x] = (self.is_heard_cum[y][x]
-                        + self.is_heard_cum[y + 1][x + 1])
-                        - (self.is_heard_cum[y][x + 1] + self.is_heard_cum[y + 1][x]);
-                }
-            }
-            // add
-            for y in rect.y0..rect.y1 {
-                for x in rect.x0..rect.x1 {
-                    self.is_heard_cum[y][x] += 1;
-                }
-            }
-            // integral
-            for y in (0..n).rev() {
-                for x in (0..n).rev() {
-                    self.is_heard_cum[y][x] = self.is_heard_cum[y][x]
-                        + self.is_heard_cum[y][x + 1]
-                        + self.is_heard_cum[y + 1][x]
-                        - self.is_heard_cum[y + 1][x + 1];
-                }
+                self.is_pos[rect.y0][rect.x0] = Some(v > 0.5);
             }
             self.hear.insert(rect, v);
-        }
-        fn is_heard_any(&self, rect: &Rect) -> bool {
-            (self.is_heard_cum[rect.y0][rect.x0] + self.is_heard_cum[rect.y1][rect.x1])
-                - (self.is_heard_cum[rect.y0][rect.x1] + self.is_heard_cum[rect.y1][rect.x0])
-                > 0
-        }
-        fn is_pos_any(&self, rect: &Rect) -> bool {
-            (self.is_pos_cum[rect.y0][rect.x0] + self.is_pos_cum[rect.y1][rect.x1])
-                - (self.is_pos_cum[rect.y0][rect.x1] + self.is_pos_cum[rect.y1][rect.x0])
-                > 0
         }
         fn is_pos_update(&mut self, yb: usize, xb: usize, b: bool) -> bool {
             if self.is_pos[yb][xb] == Some(b) {
                 return false;
-            }
-            // differential
-            for y in 0..=yb {
-                for x in 0..=xb {
-                    self.is_pos_cum[y][x] = (self.is_pos_cum[y][x] + self.is_pos_cum[y + 1][x + 1])
-                        - (self.is_pos_cum[y][x + 1] + self.is_pos_cum[y + 1][x]);
-                }
-            }
-            // add
-            self.is_pos_cum[yb][xb] += 1;
-            // integral
-            for y in (0..=yb).rev() {
-                for x in (0..=xb).rev() {
-                    self.is_pos_cum[y][x] = self.is_pos_cum[y][x]
-                        + self.is_pos_cum[y][x + 1]
-                        + self.is_pos_cum[y + 1][x]
-                        - self.is_pos_cum[y + 1][x + 1];
-                }
             }
             self.is_pos[yb][xb] = Some(b);
             true
