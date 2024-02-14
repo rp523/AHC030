@@ -4583,10 +4583,23 @@ mod solver {
                 let exp_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
                     - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
                 let exp_ave = exp_sum / area;
-                let grad_ave = (v - exp_ave) * NEXT_EPS;
-                let noise = NEXT_EPS * (rand.next_f64() - 0.5);
-                let grad_each = grad_ave / area + noise;
+                let noise = rand.next_f64() - 0.5;
+                let grad_ave = (v - exp_ave + noise) * NEXT_EPS;
+                let grad_each = grad_ave / area;
                 grads[rect.y0][rect.x0] += grad_each;
+                grads[rect.y0][rect.x1] -= grad_each;
+                grads[rect.y1][rect.x0] -= grad_each;
+                grads[rect.y1][rect.x1] += grad_each;
+            }
+            for y in 0..self.n {
+                for x in 1..self.n {
+                    grads[y][x] += grads[y][x - 1];
+                }
+            }
+            for y in 1..self.n {
+                for x in 0..self.n {
+                    grads[y][x] += grads[y - 1][x];
+                }
             }
             for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
                 for y0 in 0..next_oil_prob.h {
