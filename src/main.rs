@@ -4477,7 +4477,7 @@ mod solver {
                         //pivot_field = next_field;
                     }
                 }
-                //eprintln!("{}/{}", upd, tri);
+                eprintln!("{}/{}", upd, tri);
                 if cfg!(debug_assertions) {
                     fn level(v: usize) -> (char, char) {
                         let s = String::from("0123456789abcdef").chars().collect::<Vec<_>>();
@@ -4584,7 +4584,8 @@ mod solver {
                     - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
                 let exp_ave = exp_sum / area;
                 let grad_ave = (v - exp_ave) * NEXT_EPS;
-                let grad_each = grad_ave / area;
+                let noise = NEXT_EPS * (rand.next_f64() - 0.5);
+                let grad_each = grad_ave / area + noise;
                 grads[rect.y0][rect.x0] += grad_each;
             }
             for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
@@ -4596,9 +4597,8 @@ mod solver {
                                     let y = y0 + ry;
                                     let x = x0 + rx;
                                     if next_oil_prob.can_set[y0][x0] {
-                                        let noise = NEXT_EPS * (rand.next_f64() - 0.5);
                                         next_oil_prob.leftop[y0][x0] =
-                                            (next_oil_prob.leftop[y0][x0] + grads[y][x] + noise)
+                                            (next_oil_prob.leftop[y0][x0] + grads[y][x])
                                                 .clamp(0.0, 1.0);
                                     }
                                 }
