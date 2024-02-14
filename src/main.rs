@@ -4585,11 +4585,14 @@ mod solver {
                 let exp_ave = exp_sum / area;
                 let noise = rand.next_f64() - 0.5;
                 let grad_ave = (v - exp_ave + noise) * NEXT_EPS;
-                let grad_each = grad_ave / area;
-                grads[rect.y0][rect.x0] += grad_each;
-                grads[rect.y0][rect.x1] -= grad_each;
-                grads[rect.y1][rect.x0] -= grad_each;
-                grads[rect.y1][rect.x1] += grad_each;
+                let grad_inn = grad_ave / area;
+                let grad_out = -grad_ave / (self.n * self.n - rect.area()) as f64;
+                let into = grad_inn - grad_out;
+                grads[0][0] += grad_out;
+                grads[rect.y0][rect.x0] += into;
+                grads[rect.y0][rect.x1] -= into;
+                grads[rect.y1][rect.x0] -= into;
+                grads[rect.y1][rect.x1] += into;
             }
             for y in 0..self.n {
                 for x in 1..self.n {
