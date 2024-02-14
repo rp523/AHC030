@@ -4477,8 +4477,8 @@ mod solver {
                         //pivot_field = next_field;
                     }
                 }
-                // eprintln!("{}/{}", upd, tri);
-                if cfg!(debug_assertions) {
+                //eprintln!("{}/{}", upd, tri);
+                if false {
                     fn level(v: usize) -> (char, char) {
                         let s = String::from("0123456789abcdef").chars().collect::<Vec<_>>();
                         let c0 = s[v / 16];
@@ -4495,15 +4495,18 @@ mod solver {
                         }
                     }
                 }
-                if proceed % 4 == 0 && proceed < tot && self.may_fin_oil(&pivot_oil) {
-                    let ans_oils = pivot_oil
-                        .iter()
-                        .map(|oil| oil.gen_max())
-                        .collect::<Vec<_>>();
-                    let ans_field = self.propagate(&ans_oils);
-                    if self.try_answer(&ans_field, &predicts) {
-                        proceed += 1;
-                        tot_plan += 1;
+                let interval = if proceed < 50 { 2 } else { 4 };
+                if proceed % interval == 0 && proceed < tot {
+                    if self.may_fin_oil(&pivot_oil) || pivot_field.may_fin(&predicts) {
+                        let ans_oils = pivot_oil
+                            .iter()
+                            .map(|oil| oil.gen_max())
+                            .collect::<Vec<_>>();
+                        let ans_field = self.propagate(&ans_oils);
+                        if self.try_answer(&ans_field, &predicts) {
+                            proceed += 1;
+                            tot_plan += 1;
+                        }
                     }
                 }
             }
