@@ -4477,7 +4477,7 @@ mod solver {
                         //pivot_field = next_field;
                     }
                 }
-                eprintln!("{}/{}", upd, tri);
+                // eprintln!("{}/{}", upd, tri);
                 if cfg!(debug_assertions) {
                     fn level(v: usize) -> (char, char) {
                         let s = String::from("0123456789abcdef").chars().collect::<Vec<_>>();
