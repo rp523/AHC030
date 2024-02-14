@@ -4586,19 +4586,6 @@ mod solver {
                 let grad_ave = (v - exp_ave) * NEXT_EPS;
                 let grad_each = grad_ave / area;
                 grads[rect.y0][rect.x0] += grad_each;
-                grads[rect.y0][rect.x1] -= grad_each;
-                grads[rect.y1][rect.x0] -= grad_each;
-                grads[rect.y1][rect.x1] += grad_each;
-            }
-            for y in 0..self.n {
-                for x in 1..self.n {
-                    grads[y][x] += grads[y][x - 1];
-                }
-            }
-            for x in 0..self.n {
-                for y in 1..self.n {
-                    grads[y][x] += grads[y - 1][x];
-                }
             }
             for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
                 for y0 in 0..next_oil_prob.h {
