@@ -4158,6 +4158,7 @@ mod solver {
         }
         fn from_predicted(&mut self, oil: &Oil, predicts: &Predicts) -> bool {
             let mut updated = false;
+            let mut valid_cnt = 0;
             let mut valid_norm = 0.0;
             for y0 in 0..self.h {
                 for x0 in 0..self.w {
@@ -4182,16 +4183,23 @@ mod solver {
                     }
                     if can_set_here {
                         valid_norm += self.leftop[y0][x0];
+                        valid_cnt += 1;
                     }
                 }
             }
-            let corr = 1.0 / valid_norm;
-            for y0 in 0..self.h {
-                for x0 in 0..self.w {
-                    if self.can_set[y0][x0] {
-                        self.leftop[y0][x0] *= corr;
-                    } else {
-                        self.leftop[y0][x0] = 0.0;
+            if updated {
+                let corr = 1.0 / valid_norm;
+                for y0 in 0..self.h {
+                    for x0 in 0..self.w {
+                        self.leftop[y0][x0] = if self.can_set[y0][x0] {
+                            if valid_cnt == 1 {
+                                1.0
+                            } else {
+                                self.leftop[y0][x0] * corr
+                            }
+                        } else {
+                            0.0
+                        }
                     }
                 }
             }
@@ -4591,7 +4599,7 @@ mod solver {
             let mut loss = 0.0;
             for (rect, v) in predicts.hear.iter() {
                 let ex = field.ex[rect.y0][rect.x0];
-                let delta = ex- v;
+                let delta = ex - v;
                 loss += 0.5 * delta * delta;
             }
             loss
