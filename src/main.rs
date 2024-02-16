@@ -4260,17 +4260,44 @@ mod solver {
     struct FieldProb {
         p0: Vec<Vec<f64>>,
         ex: Vec<Vec<f64>>,
-        ex_cum: Vec<Vec<f64>>,
-        var_cum: Vec<Vec<f64>>,
     }
     impl FieldProb {
         fn new(n: usize) -> Self {
             Self {
                 p0: vec![vec![1.0; n]; n],
                 ex: vec![vec![0.0; n]; n],
-                ex_cum: vec![vec![0.0; n + 1]; n + 1],
-                var_cum: vec![vec![0.0; n + 1]; n + 1],
             }
+        }
+        fn new_from(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
+            let n = oil_probs[0].h + oils[0].h - 1;
+            let mut dp = FieldProb::new(n);
+            for (oil, oil_prob) in oils.iter().zip(oil_probs.iter()) {
+                let mut rise = vec![vec![0.0; n + 1]; n];
+                // for each oil positon
+                for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
+                    for (x0, &oil_prob) in prob_row.iter().enumerate() {
+                        // field position
+                        for (ry, row) in oil.at.iter().enumerate() {
+                            for &(xb, xe) in row.iter() {
+                                rise[y0 + ry][x0 + xb] += oil_prob;
+                                rise[y0 + ry][x0 + xe] -= oil_prob;
+                            }
+                        }
+                    }
+                }
+                for y in 0..n {
+                    for x in 1..n {
+                        rise[y][x] += rise[y][x - 1];
+                    }
+                }
+                for y in 0..n {
+                    for x in 0..n {
+                        dp.p0[y][x] *= 1.0 - rise[y][x];
+                        dp.ex[y][x] += rise[y][x];
+                    }
+                }
+            }
+            dp
         }
         fn uncertains(&self, predicts: &Predicts, rand: &mut XorShift64) -> Rect {
             let n = self.p0.len();
@@ -4284,9 +4311,8 @@ mod solver {
                     if predicts.is_pos[y][x].is_some() {
                         continue;
                     }
-                    let eval1 = (self.var_cum[y][x] + self.var_cum[y + 1][x + 1])
-                        - (self.var_cum[y][x + 1] + self.var_cum[y + 1][x]);
-                    if eval.chmax(eval1) {
+                    let eval1 = (p0 - 0.5).abs();
+                    if eval.chmin(eval1) {
                         ev_rect = Rect::from_point(y, x);
                     }
                 }
@@ -4445,7 +4471,7 @@ mod solver {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
             let mut rand = XorShift64::new();
             let mut predicts = Predicts::new(self.n);
-            let mut pivot_oil = self
+            let mut pivot_oils = self
                 .oils
                 .iter()
                 .map(|oil| OilProb::new(self.n, oil))
@@ -4455,11 +4481,11 @@ mod solver {
             let mut proceed = 0;
 
             while proceed < tot {
-                let rect = self.next_pred_pos(&pivot_oil, &predicts, &mut rand);
+                let rect = self.next_pred_pos(&pivot_oils, &predicts, &mut rand);
                 predicts.heard(rect, self.eps);
-                self.equilibrium(&self.oils, &mut pivot_oil, &mut predicts);
+                self.equilibrium(&self.oils, &mut pivot_oils, &mut predicts);
                 proceed += 1;
-                let pivot_field = self.propagate(&pivot_oil);
+                let pivot_field = FieldProb::new_from(&pivot_oils, &self.oils);
 
                 let lim_t = TIME_LIMIT * (proceed + 1) / tot_plan;
                 let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
@@ -4468,12 +4494,12 @@ mod solver {
                 let mut upd = 0;
                 while (self.t0.elapsed().as_millis() as usize) < lim_t {
                     tri += 1;
-                    let next_oil = self.greedy_better(&pivot_oil, &predicts, &mut rand);
-                    let next_field = self.propagate(&next_oil);
+                    let next_oils = self.greedy_better(&pivot_oils, &predicts, &mut rand);
+                    let next_field = FieldProb::new_from(&next_oils, &self.oils);
                     let next_loss = self.calc_loss(&predicts, &next_field);
                     if pivot_loss.chmin(next_loss) {
                         upd += 1;
-                        pivot_oil = next_oil;
+                        pivot_oils = next_oils;
                         //pivot_field = next_field;
                     }
                 }
@@ -4497,12 +4523,12 @@ mod solver {
                 }
                 let interval = if proceed < 50 { 2 } else { 4 };
                 if proceed % interval == 0 && proceed < tot {
-                    if self.may_fin_oil(&pivot_oil) || pivot_field.may_fin(&predicts) {
-                        let ans_oils = pivot_oil
+                    if self.may_fin_oil(&pivot_oils) || pivot_field.may_fin(&predicts) {
+                        let ans_oils = pivot_oils
                             .iter()
                             .map(|oil| oil.gen_max())
                             .collect::<Vec<_>>();
-                        let ans_field = self.propagate(&ans_oils);
+                        let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
                         if self.try_answer(&ans_field, &predicts) {
                             proceed += 1;
                             tot_plan += 1;
@@ -4539,7 +4565,7 @@ mod solver {
             predicts: &Predicts,
             rand: &mut XorShift64,
         ) -> Rect {
-            let field = self.propagate(&oil_probs);
+            let field = FieldProb::new_from(&oil_probs, &self.oils);
             if field.eval(&predicts).is_none() {
                 assert!(self.try_answer(&field, &predicts));
             }
@@ -4564,10 +4590,8 @@ mod solver {
         fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
             let mut loss = 0.0;
             for (rect, v) in predicts.hear.iter() {
-                let exp_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
-                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
-                let exp_ave = exp_sum / rect.area() as f64;
-                let delta = exp_ave - v;
+                let ex = field.ex[rect.y0][rect.x0];
+                let delta = ex- v;
                 loss += 0.5 * delta * delta;
             }
             loss
@@ -4578,13 +4602,12 @@ mod solver {
             predicts: &Predicts,
             rand: &mut XorShift64,
         ) -> Vec<OilProb> {
-            let field = self.propagate(oil_probs);
+            let field = FieldProb::new_from(oil_probs, &self.oils);
             let mut next_oil_probs = oil_probs.clone();
             let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
             for (rect, &v) in predicts.hear.iter() {
                 let area = rect.area() as f64;
-                let exp_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
-                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
+                let exp_sum = field.ex[rect.y0][rect.x0];
                 let exp_ave = exp_sum / area;
                 let noise = rand.next_f64() - 0.5;
                 let grad_ave = (v - exp_ave + noise) * NEXT_EPS;
@@ -4628,46 +4651,6 @@ mod solver {
                 next_oil_prob.normalize();
             }
             next_oil_probs
-        }
-        fn propagate(&self, oil_probs: &[OilProb]) -> FieldProb {
-            let mut dp = FieldProb::new(self.n);
-            for (oil, oil_prob) in self.oils.iter().zip(oil_probs.iter()) {
-                let mut rise = vec![vec![0.0; self.n + 1]; self.n];
-                // for each oil positon
-                for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
-                    for (x0, &oil_prob) in prob_row.iter().enumerate() {
-                        // field position
-                        for (ry, row) in oil.at.iter().enumerate() {
-                            for &(xb, xe) in row.iter() {
-                                rise[y0 + ry][x0 + xb] += oil_prob;
-                                rise[y0 + ry][x0 + xe] -= oil_prob;
-                            }
-                        }
-                    }
-                }
-                for y in 0..self.n {
-                    for x in 1..self.n {
-                        rise[y][x] += rise[y][x - 1];
-                    }
-                }
-                for y in 0..self.n {
-                    for x in 0..self.n {
-                        dp.p0[y][x] *= 1.0 - rise[y][x];
-                        dp.ex[y][x] += rise[y][x];
-                    }
-                }
-            }
-            for y in (0..self.n).rev() {
-                for x in (0..self.n).rev() {
-                    dp.ex_cum[y][x] = dp.ex[y][x] + dp.ex_cum[y][x + 1] + dp.ex_cum[y + 1][x]
-                        - dp.ex_cum[y + 1][x + 1];
-                    let p0 = dp.p0[y][x];
-                    let var = p0 * (1.0 - p0);
-                    dp.var_cum[y][x] = var + dp.var_cum[y][x + 1] + dp.var_cum[y + 1][x]
-                        - dp.var_cum[y + 1][x + 1];
-                }
-            }
-            dp
         }
         fn try_answer(&self, field: &FieldProb, predicts: &Predicts) -> bool {
             let mut ans = vec![];
