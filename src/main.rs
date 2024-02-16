@@ -4638,22 +4638,26 @@ mod solver {
                     grads[y][x] += grads[y - 1][x];
                 }
             }
+            for y in 0..self.n {
+                for x in (0..self.n).rev() {
+                    grads[y][x] += grads[y][x + 1];
+                }
+            }
             for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
                 for y0 in 0..next_oil_prob.h {
                     for x0 in 0..next_oil_prob.w {
+                        if !next_oil_prob.can_set[y0][x0] {
+                            continue;
+                        }
+                        let mut grad1 = 0.0;
                         for (ry, row) in oil.at.iter().enumerate() {
+                            let y = y0 + ry;
                             for &(xb, xe) in row.iter() {
-                                for rx in xb..xe {
-                                    let y = y0 + ry;
-                                    let x = x0 + rx;
-                                    if next_oil_prob.can_set[y0][x0] {
-                                        next_oil_prob.leftop[y0][x0] =
-                                            (next_oil_prob.leftop[y0][x0] + grads[y][x])
-                                                .clamp(0.0, 1.0);
-                                    }
-                                }
+                                grad1 += grads[y][x0 + xb] - grads[y][x0 + xe];
                             }
                         }
+                        next_oil_prob.leftop[y0][x0] =
+                            (next_oil_prob.leftop[y0][x0] + grad1).clamp(0.0, 1.0);
                     }
                 }
                 next_oil_prob.normalize();
