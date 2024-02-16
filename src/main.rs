@@ -4478,7 +4478,6 @@ mod solver {
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
             let mut rand = XorShift64::new();
-            let mut old_ans = BTreeSet::new();
             let mut predicts = Predicts::new(self.n);
             let mut pivot_oils = self
                 .oils
@@ -4533,48 +4532,18 @@ mod solver {
                 let interval = if proceed < 50 { 2 } else { 4 };
                 if proceed % interval == 0 && proceed < tot {
                     if self.may_fin_oil(&pivot_oils) || pivot_field.may_fin(&predicts) {
-                        if let Some(ans_field) =
-                            self.gen_ans_field(&pivot_oils, &predicts, &mut old_ans)
-                        {
-                            if self.try_answer(&ans_field, &predicts) {
-                                proceed += 1;
-                                tot_plan += 1;
-                            }
+                        let ans_oils = pivot_oils
+                            .iter()
+                            .map(|oil| oil.gen_max())
+                            .collect::<Vec<_>>();
+                        let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
+                        if self.try_answer(&ans_field, &predicts) {
+                            proceed += 1;
+                            tot_plan += 1;
                         }
                     }
                 }
             }
-        }
-        fn gen_ans_field(
-            &self,
-            oil_probs: &[OilProb],
-            predicts: &Predicts,
-            old_ans: &mut BTreeSet<Vec<u32>>,
-        ) -> Option<FieldProb> {
-            let ans_oils = oil_probs
-                .iter()
-                .map(|oil| oil.gen_max())
-                .collect::<Vec<_>>();
-            let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
-            // check
-            let mut ans = vec![0; self.n];
-            for y in 0..self.n {
-                for x in 0..self.n {
-                    if let Some(is_pos) = predicts.is_pos[y][x] {
-                        if is_pos != (ans_field.p0[y][x] < 0.5) {
-                            return None;
-                        }
-                    }
-                    if ans_field.p0[y][x] < 0.5 {
-                        ans[y] = ans[y] | 1u32 << x;
-                    }
-                }
-            }
-            if old_ans.contains(&ans) {
-                return None;
-            }
-            old_ans.insert(ans);
-            Some(ans_field)
         }
         fn may_fin_oil(&self, oil_probs: &[OilProb]) -> bool {
             for oil_prob in oil_probs.iter() {
@@ -4669,27 +4638,22 @@ mod solver {
                     grads[y][x] += grads[y - 1][x];
                 }
             }
-            for y in 0..self.n {
-                for x in (0..self.n).rev() {
-                    grads[y][x] += grads[y][x + 1];
-                }
-            }
             for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
                 for y0 in 0..next_oil_prob.h {
                     for x0 in 0..next_oil_prob.w {
-                        if !next_oil_prob.can_set[y0][x0] {
-                            next_oil_prob.leftop[y0][x0] = 0.0;
-                            continue;
-                        }
-                        let mut grad1 = 0.0;
                         for (ry, row) in oil.at.iter().enumerate() {
-                            let y = y0 + ry;
                             for &(xb, xe) in row.iter() {
-                                grad1 += grads[y][x0 + xb] - grads[y][x0 + xe];
+                                for rx in xb..xe {
+                                    let y = y0 + ry;
+                                    let x = x0 + rx;
+                                    if next_oil_prob.can_set[y0][x0] {
+                                        next_oil_prob.leftop[y0][x0] =
+                                            (next_oil_prob.leftop[y0][x0] + grads[y][x])
+                                                .clamp(0.0, 1.0);
+                                    }
+                                }
                             }
                         }
-                        next_oil_prob.leftop[y0][x0] =
-                            (next_oil_prob.leftop[y0][x0] + grad1).clamp(0.0, 1.0);
                     }
                 }
                 next_oil_prob.normalize();
