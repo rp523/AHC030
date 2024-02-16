@@ -4478,6 +4478,7 @@ mod solver {
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
             let mut rand = XorShift64::new();
+            let mut old_ans = BTreeSet::new();
             let mut predicts = Predicts::new(self.n);
             let mut pivot_oils = self
                 .oils
@@ -4532,7 +4533,9 @@ mod solver {
                 let interval = if proceed < 50 { 2 } else { 4 };
                 if proceed % interval == 0 && proceed < tot {
                     if self.may_fin_oil(&pivot_oils) || pivot_field.may_fin(&predicts) {
-                        if let Some(ans_field) = self.gen_ans_field(&pivot_oils, &predicts) {
+                        if let Some(ans_field) =
+                            self.gen_ans_field(&pivot_oils, &predicts, &mut old_ans)
+                        {
                             if self.try_answer(&ans_field, &predicts) {
                                 proceed += 1;
                                 tot_plan += 1;
@@ -4542,21 +4545,35 @@ mod solver {
                 }
             }
         }
-        fn gen_ans_field(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Option<FieldProb> {
+        fn gen_ans_field(
+            &self,
+            oil_probs: &[OilProb],
+            predicts: &Predicts,
+            old_ans: &mut BTreeSet<Vec<u32>>,
+        ) -> Option<FieldProb> {
             let ans_oils = oil_probs
                 .iter()
                 .map(|oil| oil.gen_max())
                 .collect::<Vec<_>>();
             let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
             // check
+            let mut ans = vec![0; self.n];
             for y in 0..self.n {
                 for x in 0..self.n {
-                    let Some(is_pos) = predicts.is_pos[y][x] else { continue; };
-                    if is_pos != (ans_field.p0[y][x] < 0.5) {
-                        return None;
+                    if let Some(is_pos) = predicts.is_pos[y][x] {
+                        if is_pos != (ans_field.p0[y][x] < 0.5) {
+                            return None;
+                        }
+                    }
+                    if ans_field.p0[y][x] < 0.5 {
+                        ans[y] = ans[y] | 1u32 << x;
                     }
                 }
             }
+            if old_ans.contains(&ans) {
+                return None;
+            }
+            old_ans.insert(ans);
             Some(ans_field)
         }
         fn may_fin_oil(&self, oil_probs: &[OilProb]) -> bool {
