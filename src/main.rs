@@ -4270,15 +4270,10 @@ mod solver {
         ex: Vec<Vec<f64>>,
     }
     impl FieldProb {
-        fn new(n: usize) -> Self {
-            Self {
-                p0: vec![vec![1.0; n]; n],
-                ex: vec![vec![0.0; n]; n],
-            }
-        }
-        fn new_from(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
+        fn new(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
             let n = oil_probs[0].h + oils[0].h - 1;
-            let mut dp = FieldProb::new(n);
+            let mut p0 = vec![vec![1.0; n]; n];
+            let mut ex = vec![vec![0.0; n]; n];
             for (oil, oil_prob) in oils.iter().zip(oil_probs.iter()) {
                 let mut rise = vec![vec![0.0; n + 1]; n];
                 // for each oil positon
@@ -4300,15 +4295,14 @@ mod solver {
                 }
                 for y in 0..n {
                     for x in 0..n {
-                        dp.p0[y][x] *= 1.0 - rise[y][x];
-                        dp.ex[y][x] += rise[y][x];
+                        p0[y][x] *= 1.0 - rise[y][x];
+                        ex[y][x] += rise[y][x];
                     }
                 }
             }
-            dp
+            Self { p0, ex }
         }
-        fn uncertains(&self, predicts: &Predicts, rand: &mut XorShift64) -> Rect {
-            let n = self.p0.len();
+        fn uncertains(&self, predicts: &Predicts) -> Rect {
             let mut eval = None;
             let mut ev_rect = Rect::from_point(0, 0);
             if eval.is_some() {
@@ -4477,7 +4471,6 @@ mod solver {
     impl Solver {
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
-            let mut rand = XorShift64::new();
             let mut old_ans = BTreeSet::new();
             let mut predicts = Predicts::new(self.n);
             let mut pivot_oils = self
@@ -4495,12 +4488,12 @@ mod solver {
                             .iter()
                             .map(|oil| oil.gen_max())
                             .collect::<Vec<_>>();
-                        let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
+                        let ans_field = FieldProb::new(&ans_oils, &self.oils);
                         if self.try_answer(&ans_field, &predicts, &mut old_ans) {
                             continue;
                         }
                     } else {
-                        let ans_field = FieldProb::new_from(&pivot_oils, &self.oils);
+                        let ans_field = FieldProb::new(&pivot_oils, &self.oils);
                         if ans_field.may_fin(&predicts) {
                             if self.try_answer(&ans_field, &predicts, &mut old_ans) {
                                 continue;
@@ -4508,23 +4501,17 @@ mod solver {
                         }
                     }
                 }
-                let rect = self.next_pred_pos(&pivot_oils, &predicts, &mut rand);
+                let rect = self.next_pred_pos(&pivot_oils, &predicts);
                 predicts.heard(rect, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oils, &mut predicts);
-                let pivot_field = FieldProb::new_from(&pivot_oils, &self.oils);
+                let pivot_field = FieldProb::new(&pivot_oils, &self.oils);
 
                 let lim_t = TIME_LIMIT * (li + 1) / tot;
-                //eprintln!("{} {} {} {}", tot_loop, remain, self.t0.elapsed().as_millis() as usize , lim_t);
-                let mut tri = 0;
-                let mut upd = 0;
+                //let mut tri = 0;
+                //let mut upd = 0;
                 while (self.t0.elapsed().as_millis() as usize) < lim_t {
-                    tri += 1;
-                    let next_oils = self.greedy_better(&pivot_oils, &predicts, &mut rand);
-                    {
-                        upd += 1;
-                        pivot_oils = next_oils;
-                        //pivot_field = next_field;
-                    }
+                    let next_oils = self.greedy_better(&pivot_oils, &predicts);
+                    pivot_oils = next_oils;
                 }
                 //eprintln!("{}/{}", upd, tri);
                 if false {
@@ -4568,17 +4555,12 @@ mod solver {
             }
             true
         }
-        fn next_pred_pos(
-            &self,
-            oil_probs: &[OilProb],
-            predicts: &Predicts,
-            rand: &mut XorShift64,
-        ) -> Rect {
-            let field = FieldProb::new_from(&oil_probs, &self.oils);
+        fn next_pred_pos(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Rect {
+            let field = FieldProb::new(&oil_probs, &self.oils);
             if field.eval(&predicts).is_none() {
                 assert!(self.try_answer(&field, &predicts, &mut BTreeSet::new()));
             }
-            field.uncertains(&predicts, rand)
+            field.uncertains(&predicts)
         }
         fn equilibrium(&self, oils: &[Oil], oil_probs: &mut [OilProb], predicts: &mut Predicts) {
             loop {
@@ -4605,13 +4587,8 @@ mod solver {
             }
             loss
         }
-        fn greedy_better(
-            &self,
-            oil_probs: &Vec<OilProb>,
-            predicts: &Predicts,
-            rand: &mut XorShift64,
-        ) -> Vec<OilProb> {
-            let field = FieldProb::new_from(oil_probs, &self.oils);
+        fn greedy_better(&self, oil_probs: &Vec<OilProb>, predicts: &Predicts) -> Vec<OilProb> {
+            let field = FieldProb::new(oil_probs, &self.oils);
             let mut next_oil_probs = oil_probs.clone();
             let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
             for (rect, &v) in predicts.hear.iter() {

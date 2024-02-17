@@ -7,7 +7,7 @@ from time import time
 
 def main():
     seed_num = int(sys.argv[1])
-    getoutput("cargo build -r")
+    getoutput("cargo fmt && cargo build -r")
     scan_bin = Path("scan")
     if scan_bin.exists():
         os.remove(scan_bin)
