@@ -4238,31 +4238,6 @@ mod solver {
                 }
             }
         }
-        fn gen_next(pivot_oil: &[OilProb], rand: &mut XorShift64) -> Vec<OilProb> {
-            pivot_oil
-                .iter()
-                .map(|oil| {
-                    let mut next = oil.clone();
-                    next.leftop.iter_mut().zip(next.can_set.iter()).for_each(
-                        |(leftop, can_set)| {
-                            leftop
-                                .iter_mut()
-                                .zip(can_set.iter())
-                                .for_each(|(leftop, &can_set)| {
-                                    if can_set {
-                                        let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
-                                        *leftop = (*leftop + noise).clamp(0.0, 1.0);
-                                    } else {
-                                        debug_assert!(*leftop == 0.0);
-                                    }
-                                })
-                        },
-                    );
-                    next.normalize();
-                    next
-                })
-                .collect::<Vec<_>>()
-        }
     }
     #[derive(Clone)]
     struct FieldProb {
@@ -4471,13 +4446,13 @@ mod solver {
         }
     }
     const TIME_LIMIT: usize = 3000;
-    const NEXT_EPS: f64 = 1e-2;
     pub struct Solver {
         t0: Instant,
         n: usize,
         m: usize,
         eps: f64,
         oils: Vec<Oil>,
+        vsum: f64,
     }
     impl Solver {
         pub fn solve(&self) {
@@ -4602,53 +4577,97 @@ mod solver {
         fn greedy_better(&self, oil_probs: &Vec<OilProb>, predicts: &Predicts) -> Vec<OilProb> {
             let field = FieldProb::new(oil_probs, &self.oils);
             let mut next_oil_probs = oil_probs.clone();
-            let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
-            for (rect, &v) in predicts.hear.iter() {
-                let area = rect.area() as f64;
-                let exp_sum = field.ex[rect.y0][rect.x0];
-                let exp_ave = exp_sum / area;
-                let grad_ave = v - exp_ave;
-                let grad_inn = grad_ave / area;
-                let grad_out = -grad_ave / (self.n * self.n - rect.area()) as f64;
-                let into = grad_inn - grad_out;
-                grads[0][0] += grad_out;
-                grads[rect.y0][rect.x0] += into;
-                grads[rect.y0][rect.x1] -= into;
-                grads[rect.y1][rect.x0] -= into;
-                grads[rect.y1][rect.x1] += into;
+            let mut grads1 = vec![vec![0.0; self.n + 1]; self.n + 1];
+            let mut grads2 = vec![vec![0.0; self.n + 1]; self.n + 1];
+            for (rect, &vhat_inn) in predicts.hear.iter() {
+                fn calc_grad1(exp: f64, var: f64, vhat: f64) -> f64 {
+                    -(exp - vhat) / var
+                }
+                fn calc_grad2(exp: f64, var: f64, vhat: f64) -> f64 {
+                    (-var + (exp - vhat).powi(2)) / (2.0 * var.powi(2))
+                }
+
+                let vhat_out = self.vsum - vhat_inn;
+                let exp_out = self.vsum - field.ex[rect.y0][rect.x0];
+                let var_out = field.var_sum - field.var[rect.y0][rect.x0];
+
+                {
+                    //let grad_inn = calc_grad1(exp_inn, var_inn, vhat_inn);
+                    let grad_out = calc_grad1(exp_out, var_out, vhat_out);
+                    let grad_inn = -grad_out * (self.n * self.n - 1) as f64;
+                    let into = grad_inn - grad_out;
+                    grads1[0][0] += grad_out;
+                    grads1[rect.y0][rect.x0] += into;
+                    grads1[rect.y0][rect.x1] -= into;
+                    grads1[rect.y1][rect.x0] -= into;
+                    grads1[rect.y1][rect.x1] += into;
+                }
+                {
+                    let grad_out = calc_grad2(exp_out, var_out, vhat_out);
+                    let grad_inn = -grad_out * (self.n * self.n - 1) as f64;
+                    let into = grad_inn - grad_out;
+                    grads2[0][0] += grad_out;
+                    grads2[rect.y0][rect.x0] += into;
+                    grads2[rect.y0][rect.x1] -= into;
+                    grads2[rect.y1][rect.x0] -= into;
+                    grads2[rect.y1][rect.x1] += into;
+                }
             }
             for y in 0..self.n {
                 for x in 1..self.n {
-                    grads[y][x] += grads[y][x - 1];
+                    grads1[y][x] += grads1[y][x - 1];
                 }
             }
             for y in 1..self.n {
                 for x in 0..self.n {
-                    grads[y][x] += grads[y - 1][x];
+                    grads1[y][x] += grads1[y - 1][x];
                 }
             }
             for y in 0..self.n {
-                for x in (0..self.n).rev() {
-                    grads[y][x] += grads[y][x + 1];
+                for x in 1..self.n {
+                    grads2[y][x] += grads2[y][x - 1];
                 }
             }
-            for (next_oil_prob, oil) in next_oil_probs.iter_mut().zip(self.oils.iter()) {
+            for y in 1..self.n {
+                for x in 0..self.n {
+                    grads2[y][x] += grads2[y - 1][x];
+                }
+            }
+            const GRAD_EPS: f64 = 1e-1;
+            for (next_oil_prob, (oil, rise)) in next_oil_probs
+                .iter_mut()
+                .zip(self.oils.iter().zip(field.rise.iter()))
+            {
+                let mut grad1st = None;
+                let mut except_1st_sum = 0.0;
                 for y0 in 0..next_oil_prob.h {
                     for x0 in 0..next_oil_prob.w {
                         if !next_oil_prob.can_set[y0][x0] {
                             continue;
                         }
-                        let mut grad1 = 0.0;
+                        if grad1st.is_none() {
+                            grad1st = Some((y0, x0));
+                            continue;
+                        }
+                        let mut grad_here = 0.0;
                         for (ry, row) in oil.at.iter().enumerate() {
                             let y = y0 + ry;
                             for &(xb, xe) in row.iter() {
-                                grad1 += grads[y][x0 + xb] - grads[y][x0 + xe];
+                                for rx in xb..xe {
+                                    let x = x0 + rx;
+                                    grad_here += grads1[y][x];
+                                    grad_here += grads2[y][x] * (1.0 - 2.0 * rise[y][x]);
+                                }
                             }
                         }
                         next_oil_prob.leftop[y0][x0] =
-                            (next_oil_prob.leftop[y0][x0] + grad1 * NEXT_EPS).clamp(0.0, 1.0);
+                            (next_oil_prob.leftop[y0][x0] + grad_here * GRAD_EPS).clamp(0.0, 1.0);
+                        except_1st_sum += grad_here;
                     }
                 }
+                let (y1, x1) = grad1st.unwrap();
+                next_oil_prob.leftop[y1][x1] =
+                    (next_oil_prob.leftop[y1][x1] - except_1st_sum * GRAD_EPS).clamp(0.0, 1.0);
                 next_oil_prob.normalize();
             }
             next_oil_probs
@@ -4719,12 +4738,14 @@ mod solver {
             let m = read::<usize>();
             let eps = read::<f64>();
             let oils = (0..m).map(|_| Oil::new()).collect::<Vec<_>>();
+            let vsum = oils.iter().map(|oil| oil.sz).sum::<usize>() as f64;
             Self {
                 t0,
                 n,
                 m,
                 eps,
                 oils,
+                vsum,
             }
         }
     }
