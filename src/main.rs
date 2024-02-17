@@ -4478,24 +4478,36 @@ mod solver {
         pub fn solve(&self) {
             //let mut rng = ChaChaRng::from_seed([0; 32]);
             let mut rand = XorShift64::new();
+            let mut old_ans = BTreeSet::new();
             let mut predicts = Predicts::new(self.n);
             let mut pivot_oils = self
                 .oils
                 .iter()
                 .map(|oil| OilProb::new(self.n, oil))
                 .collect::<Vec<_>>();
-            let mut tot_plan = self.n * self.n * 3 / 4;
             let tot = 2 * self.n * self.n;
-            let mut proceed = 0;
 
-            while proceed < tot {
+            for li in 0..tot {
+                let interval = if li < 50 { 2 } else { 4 };
+                if li % interval == 1 {
+                    if self.may_fin_oil(&pivot_oils)
+                        || FieldProb::new_from(&pivot_oils, &self.oils).may_fin(&predicts)
+                    {
+                        let ans_oils = pivot_oils
+                            .iter()
+                            .map(|oil| oil.gen_max())
+                            .collect::<Vec<_>>();
+                        let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
+                        if self.try_answer(&ans_field, &predicts, &mut old_ans) {}
+                        continue;
+                    }
+                }
                 let rect = self.next_pred_pos(&pivot_oils, &predicts, &mut rand);
                 predicts.heard(rect, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oils, &mut predicts);
-                proceed += 1;
                 let pivot_field = FieldProb::new_from(&pivot_oils, &self.oils);
 
-                let lim_t = TIME_LIMIT * (proceed + 1) / tot_plan;
+                let lim_t = TIME_LIMIT * (li + 1) / tot;
                 let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
                 //eprintln!("{} {} {} {}", tot_loop, remain, self.t0.elapsed().as_millis() as usize , lim_t);
                 let mut tri = 0;
@@ -4526,20 +4538,6 @@ mod solver {
                             let g = level(255);
                             let b = level(255 - v);
                             println!("#c {} {} #{}{}{}{}{}{}", y, x, r.0, r.1, g.0, g.1, b.0, b.1);
-                        }
-                    }
-                }
-                let interval = if proceed < 50 { 2 } else { 4 };
-                if proceed % interval == 0 && proceed < tot {
-                    if self.may_fin_oil(&pivot_oils) || pivot_field.may_fin(&predicts) {
-                        let ans_oils = pivot_oils
-                            .iter()
-                            .map(|oil| oil.gen_max())
-                            .collect::<Vec<_>>();
-                        let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
-                        if self.try_answer(&ans_field, &predicts) {
-                            proceed += 1;
-                            tot_plan += 1;
                         }
                     }
                 }
@@ -4575,7 +4573,7 @@ mod solver {
         ) -> Rect {
             let field = FieldProb::new_from(&oil_probs, &self.oils);
             if field.eval(&predicts).is_none() {
-                assert!(self.try_answer(&field, &predicts));
+                assert!(self.try_answer(&field, &predicts, &mut BTreeSet::new()));
             }
             field.uncertains(&predicts, rand)
         }
@@ -4664,19 +4662,46 @@ mod solver {
             }
             next_oil_probs
         }
-        fn try_answer(&self, field: &FieldProb, predicts: &Predicts) -> bool {
+        fn try_answer(
+            &self,
+            field: &FieldProb,
+            predicts: &Predicts,
+            old_ans: &mut BTreeSet<Vec<usize>>,
+        ) -> bool {
             let mut ans = vec![];
+            let mut ansf = vec![0; (self.n * self.n + 64 - 1) / 64];
+            let mut idx = 0;
+            let mut all_predicted = true;
+            let mut contradict = false;
             for (y, p0) in field.p0.iter().enumerate() {
                 for (x, &p0) in p0.iter().enumerate() {
                     if let Some(is_pos) = predicts.is_pos[y][x] {
                         if is_pos {
                             ans.push((y, x));
+                            ansf[idx / 64] |= 1usize << (idx % 64);
+                            if p0 > 0.5 {
+                                contradict = true;;
+                            }
+                        } else if p0 < 0.5 {
+                            contradict = true;;
                         }
-                    } else if p0 < 0.5 {
-                        ans.push((y, x));
+                    } else {
+                        all_predicted = false;
+                        if p0 < 0.5 {
+                            ans.push((y, x));
+                            ansf[idx / 64] |= 1usize << (idx % 64);
+                        }
                     }
+                    idx += 1;
                 }
             }
+            if !all_predicted && contradict {
+                return false;
+            }
+            if old_ans.contains(&ansf) {
+                return false;
+            }
+            old_ans.insert(ansf);
             let min_len = self.oils.iter().map(|oil| oil.sz).min().unwrap();
             let max_len = self.oils.iter().map(|oil| oil.sz).sum::<usize>();
             if min_len <= ans.len() && ans.len() <= max_len {
