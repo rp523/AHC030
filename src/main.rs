@@ -4490,16 +4490,22 @@ mod solver {
             for li in 0..tot {
                 let interval = if li < 50 { 2 } else { 4 };
                 if li % interval == 1 {
-                    if self.may_fin_oil(&pivot_oils)
-                        || FieldProb::new_from(&pivot_oils, &self.oils).may_fin(&predicts)
-                    {
+                    if self.may_fin_oil(&pivot_oils) {
                         let ans_oils = pivot_oils
                             .iter()
                             .map(|oil| oil.gen_max())
                             .collect::<Vec<_>>();
                         let ans_field = FieldProb::new_from(&ans_oils, &self.oils);
-                        if self.try_answer(&ans_field, &predicts, &mut old_ans) {}
-                        continue;
+                        if self.try_answer(&ans_field, &predicts, &mut old_ans) {
+                            continue;
+                        }
+                    } else {
+                        let ans_field = FieldProb::new_from(&pivot_oils, &self.oils);
+                        if ans_field.may_fin(&predicts) {
+                            if self.try_answer(&ans_field, &predicts, &mut old_ans) {
+                                continue;
+                            }
+                        }
                     }
                 }
                 let rect = self.next_pred_pos(&pivot_oils, &predicts, &mut rand);
