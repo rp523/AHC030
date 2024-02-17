@@ -4268,39 +4268,50 @@ mod solver {
     struct FieldProb {
         p0: Vec<Vec<f64>>,
         ex: Vec<Vec<f64>>,
+        rise: Vec<Vec<Vec<f64>>>,
+        var: Vec<Vec<f64>>,
+        var_sum: f64,
     }
     impl FieldProb {
         fn new(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
             let n = oil_probs[0].h + oils[0].h - 1;
+            let m = oil_probs.len();
             let mut p0 = vec![vec![1.0; n]; n];
             let mut ex = vec![vec![0.0; n]; n];
-            for (oil, oil_prob) in oils.iter().zip(oil_probs.iter()) {
-                let mut rise = vec![vec![0.0; n + 1]; n];
+            let mut rise = vec![vec![vec![0.0; n]; n]; m];
+            let mut var = vec![vec![0.0; n]; n];
+            for (oil, (oil_prob, rise)) in oils.iter().zip(oil_probs.iter().zip(rise.iter_mut())) {
                 // for each oil positon
                 for (y0, prob_row) in oil_prob.leftop.iter().enumerate() {
                     for (x0, &oil_prob) in prob_row.iter().enumerate() {
                         // field position
                         for (ry, row) in oil.at.iter().enumerate() {
+                            let y = y0 + ry;
                             for &(xb, xe) in row.iter() {
-                                rise[y0 + ry][x0 + xb] += oil_prob;
-                                rise[y0 + ry][x0 + xe] -= oil_prob;
+                                for rx in xb..xe {
+                                    let x = x0 + rx;
+                                    rise[y][x] += oil_prob;
+                                }
                             }
                         }
-                    }
-                }
-                for y in 0..n {
-                    for x in 1..n {
-                        rise[y][x] += rise[y][x - 1];
                     }
                 }
                 for y in 0..n {
                     for x in 0..n {
                         p0[y][x] *= 1.0 - rise[y][x];
                         ex[y][x] += rise[y][x];
+                        var[y][x] += rise[y][x] * (1.0 - rise[y][x]);
                     }
                 }
             }
-            Self { p0, ex }
+            let var_sum = var.iter().map(|var| var.iter().sum::<f64>()).sum::<f64>();
+            Self {
+                p0,
+                ex,
+                rise,
+                var,
+                var_sum,
+            }
         }
         fn uncertains(&self, predicts: &Predicts) -> Rect {
             let mut eval = None;
@@ -4523,7 +4534,8 @@ mod solver {
                     }
                     for (y, p0) in pivot_field.p0.iter().enumerate() {
                         for (x, &p0) in p0.iter().enumerate() {
-                            let v = (((1.0 - p0) * 255.0) as usize).clamp(0, 255);
+                            let score = 1.0 - p0;
+                            let v = ((score * 255.0) as usize).clamp(0, 255);
                             let r = level(255 - v);
                             let g = level(255);
                             let b = level(255 - v);
