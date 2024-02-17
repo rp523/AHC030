@@ -4618,7 +4618,7 @@ mod solver {
                 let area = rect.area() as f64;
                 let exp_sum = field.ex[rect.y0][rect.x0];
                 let exp_ave = exp_sum / area;
-                let grad_ave = (v - exp_ave) * NEXT_EPS;
+                let grad_ave = v - exp_ave;
                 let grad_inn = grad_ave / area;
                 let grad_out = -grad_ave / (self.n * self.n - rect.area()) as f64;
                 let into = grad_inn - grad_out;
@@ -4657,7 +4657,7 @@ mod solver {
                             }
                         }
                         next_oil_prob.leftop[y0][x0] =
-                            (next_oil_prob.leftop[y0][x0] + grad1).clamp(0.0, 1.0);
+                            (next_oil_prob.leftop[y0][x0] + grad1 * NEXT_EPS).clamp(0.0, 1.0);
                     }
                 }
                 next_oil_prob.normalize();
