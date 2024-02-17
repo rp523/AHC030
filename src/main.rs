@@ -4508,16 +4508,13 @@ mod solver {
                 let pivot_field = FieldProb::new_from(&pivot_oils, &self.oils);
 
                 let lim_t = TIME_LIMIT * (li + 1) / tot;
-                let mut pivot_loss = self.calc_loss(&predicts, &pivot_field);
                 //eprintln!("{} {} {} {}", tot_loop, remain, self.t0.elapsed().as_millis() as usize , lim_t);
                 let mut tri = 0;
                 let mut upd = 0;
                 while (self.t0.elapsed().as_millis() as usize) < lim_t {
                     tri += 1;
                     let next_oils = self.greedy_better(&pivot_oils, &predicts, &mut rand);
-                    let next_field = FieldProb::new_from(&next_oils, &self.oils);
-                    let next_loss = self.calc_loss(&predicts, &next_field);
-                    if pivot_loss.chmin(next_loss) {
+                    {
                         upd += 1;
                         pivot_oils = next_oils;
                         //pivot_field = next_field;
@@ -4615,8 +4612,7 @@ mod solver {
                 let area = rect.area() as f64;
                 let exp_sum = field.ex[rect.y0][rect.x0];
                 let exp_ave = exp_sum / area;
-                let noise = rand.next_f64() - 0.5;
-                let grad_ave = (v - exp_ave + noise) * NEXT_EPS;
+                let grad_ave = (v - exp_ave) * NEXT_EPS;
                 let grad_inn = grad_ave / area;
                 let grad_out = -grad_ave / (self.n * self.n - rect.area()) as f64;
                 let into = grad_inn - grad_out;
@@ -4680,10 +4676,10 @@ mod solver {
                             ans.push((y, x));
                             ansf[idx / 64] |= 1usize << (idx % 64);
                             if p0 > 0.5 {
-                                contradict = true;;
+                                contradict = true;
                             }
                         } else if p0 < 0.5 {
-                            contradict = true;;
+                            contradict = true;
                         }
                     } else {
                         all_predicted = false;
