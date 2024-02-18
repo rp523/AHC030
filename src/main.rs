@@ -4238,42 +4238,20 @@ mod solver {
                 }
             }
         }
-        fn gen_next(pivot_oil: &[OilProb], rand: &mut XorShift64) -> Vec<OilProb> {
-            pivot_oil
-                .iter()
-                .map(|oil| {
-                    let mut next = oil.clone();
-                    next.leftop.iter_mut().zip(next.can_set.iter()).for_each(
-                        |(leftop, can_set)| {
-                            leftop
-                                .iter_mut()
-                                .zip(can_set.iter())
-                                .for_each(|(leftop, &can_set)| {
-                                    if can_set {
-                                        let noise = NEXT_EPS * (2.0 * rand.next_f64() - 1.0);
-                                        *leftop = (*leftop + noise).clamp(0.0, 1.0);
-                                    } else {
-                                        debug_assert!(*leftop == 0.0);
-                                    }
-                                })
-                        },
-                    );
-                    next.normalize();
-                    next
-                })
-                .collect::<Vec<_>>()
-        }
     }
     #[derive(Clone)]
     struct FieldProb {
         p0: Vec<Vec<f64>>,
         ex: Vec<Vec<f64>>,
+        ex_cum: Vec<Vec<f64>>,
+        var_cum: Vec<Vec<f64>>,
     }
     impl FieldProb {
         fn new(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
             let n = oil_probs[0].h + oils[0].h - 1;
             let mut p0 = vec![vec![1.0; n]; n];
             let mut ex = vec![vec![0.0; n]; n];
+            let mut var = vec![vec![0.0; n]; n];
             for (oil, oil_prob) in oils.iter().zip(oil_probs.iter()) {
                 let mut rise = vec![vec![0.0; n + 1]; n];
                 // for each oil positon
@@ -4297,10 +4275,26 @@ mod solver {
                     for x in 0..n {
                         p0[y][x] *= 1.0 - rise[y][x];
                         ex[y][x] += rise[y][x];
+                        var[y][x] += rise[y][x] * (1.0 - rise[y][x]);
                     }
                 }
             }
-            Self { p0, ex }
+            let mut ex_cum = vec![vec![0.0; n + 1]; n + 1];
+            let mut var_cum = vec![vec![0.0; n + 1]; n + 1];
+            for y in (0..n).rev() {
+                for x in (0..n).rev() {
+                    ex_cum[y][x] =
+                        ex[y][x] + ex_cum[y][x + 1] + ex_cum[y + 1][x] - ex_cum[y + 1][x + 1];
+                    var_cum[y][x] =
+                        var[y][x] + var_cum[y][x + 1] + var_cum[y + 1][x] - var_cum[y + 1][x + 1];
+                }
+            }
+            Self {
+                p0,
+                ex,
+                ex_cum,
+                var_cum,
+            }
         }
         fn uncertains(&self, predicts: &Predicts) -> Rect {
             let mut eval = None;
@@ -4363,7 +4357,7 @@ mod solver {
         }
     }
     struct Predicts {
-        hear: BTreeMap<Rect, f64>,
+        hear: BTreeMap<(Rect, bool), f64>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
@@ -4373,12 +4367,23 @@ mod solver {
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, rect: Rect, eps: f64) {
-            fn predict(rect: &Rect, eps: f64) -> f64 {
+        fn heard(&mut self, rect: Rect, inn: bool, eps: f64) {
+            fn predict(n: usize, rect: &Rect, inn: bool, eps: f64) -> f64 {
                 let mut pos = vec![];
-                for y in rect.y0..rect.y1 {
-                    for x in rect.x0..rect.x1 {
-                        pos.push((y, x));
+                if inn {
+                    for y in rect.y0..rect.y1 {
+                        for x in rect.x0..rect.x1 {
+                            pos.push((y, x));
+                        }
+                    }
+                } else {
+                    for y in 0..n {
+                        for x in 0..n {
+                            if rect.y0 <= y && y < rect.y1 && rect.x0 <= x && x < rect.x1 {
+                                continue;
+                            }
+                            pos.push((y, x));
+                        }
                     }
                 }
                 let k = pos.len();
@@ -4391,14 +4396,14 @@ mod solver {
                 if k == 1 {
                     return u;
                 }
-                let v = (u - k as f64 * eps) / (1.0 - 2.0 * eps);
-                v / k as f64
+                (u - k as f64 * eps) / (1.0 - 2.0 * eps)
             }
-            let v = predict(&rect, eps);
+            let n = self.is_pos.len();
+            let v = predict(n, &rect, inn, eps);
             if rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
                 self.is_pos[rect.y0][rect.x0] = Some(v > 0.5);
             }
-            self.hear.insert(rect, v);
+            self.hear.insert((rect, inn), v);
         }
         fn is_pos_update(&mut self, yb: usize, xb: usize, b: bool) -> bool {
             if self.is_pos[yb][xb] == Some(b) {
@@ -4460,7 +4465,6 @@ mod solver {
         }
     }
     const TIME_LIMIT: usize = 3000;
-    const NEXT_EPS: f64 = 1e-2;
     pub struct Solver {
         t0: Instant,
         n: usize,
@@ -4479,8 +4483,9 @@ mod solver {
                 .map(|oil| OilProb::new(self.n, oil))
                 .collect::<Vec<_>>();
             let tot = 2 * self.n * self.n;
+            let skp = self.initialize(&mut predicts);
 
-            for li in 0..tot {
+            for li in (0..tot).skip(skp) {
                 let interval = if li < 50 { 2 } else { 4 };
                 if li % interval == 1 {
                     if self.may_fin_oil(&pivot_oils) {
@@ -4502,7 +4507,7 @@ mod solver {
                     }
                 }
                 let rect = self.next_pred_pos(&pivot_oils, &predicts);
-                predicts.heard(rect, self.eps);
+                predicts.heard(rect, true, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oils, &mut predicts);
                 let pivot_field = FieldProb::new(&pivot_oils, &self.oils);
 
@@ -4532,6 +4537,30 @@ mod solver {
                     }
                 }
             }
+        }
+        fn initialize(&self, predicts: &mut Predicts) -> usize {
+            let mut skp = 0;
+            for y in 0..self.n {
+                let rect = Rect {
+                    y0: y,
+                    x0: 0,
+                    y1: y + 1,
+                    x1: self.n,
+                };
+                predicts.heard(rect, false, self.eps);
+                skp += 1;
+            }
+            for x in 0..self.n {
+                let rect = Rect {
+                    y0: 0,
+                    x0: x,
+                    y1: self.n,
+                    x1: x + 1,
+                };
+                predicts.heard(rect, false, self.eps);
+                skp += 1;
+            }
+            skp
         }
         fn may_fin_oil(&self, oil_probs: &[OilProb]) -> bool {
             for oil_prob in oil_probs.iter() {
@@ -4578,26 +4607,42 @@ mod solver {
                 }
             }
         }
-        fn calc_loss(&self, predicts: &Predicts, field: &FieldProb) -> f64 {
-            let mut loss = 0.0;
-            for (rect, v) in predicts.hear.iter() {
-                let ex = field.ex[rect.y0][rect.x0];
-                let delta = ex - v;
-                loss += 0.5 * delta * delta;
-            }
-            loss
-        }
         fn greedy_better(&self, oil_probs: &Vec<OilProb>, predicts: &Predicts) -> Vec<OilProb> {
             let field = FieldProb::new(oil_probs, &self.oils);
             let mut next_oil_probs = oil_probs.clone();
             let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
-            for (rect, &v) in predicts.hear.iter() {
-                let area = rect.area() as f64;
-                let exp_sum = field.ex[rect.y0][rect.x0];
-                let exp_ave = exp_sum / area;
-                let grad_ave = v - exp_ave;
-                let grad_inn = grad_ave / area;
-                let grad_out = -grad_ave / (self.n * self.n - rect.area()) as f64;
+            const NEXT_EPS: f64 = 1e-5;
+            fn epsilon_var(mut eps: f64, sz: usize) -> f64 {
+                if sz == 1 {
+                    eps = 1e-3;
+                }
+                sz as f64 * eps * (1.0 - eps) / (1.0 - 2.0 * eps).powi(2)
+            }
+            for ((rect, inn), v_sum) in predicts.hear.iter() {
+                let area_inn = rect.area();
+                let area_out = self.n * self.n - area_inn;
+                let exp_inn_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
+                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
+                let exp_out_sum = field.ex_cum[0][0] - exp_inn_sum;
+                let var_inn_sum = (field.var_cum[rect.y0][rect.x0]
+                    + field.var_cum[rect.y1][rect.x1])
+                    - (field.var_cum[rect.y0][rect.x1] + field.var_cum[rect.y1][rect.x0]);
+                let var_out_sum = field.var_cum[0][0] - var_inn_sum;
+                let (grad_inn, grad_out) = if *inn {
+                    let v_inn_sum = *v_sum;
+                    let mut grad_inn_sum = v_inn_sum - exp_inn_sum;
+                    grad_inn_sum *= var_inn_sum / epsilon_var(self.eps, area_inn);
+                    let grad_inn = grad_inn_sum / area_inn as f64;
+                    let grad_out = -grad_inn_sum / area_out as f64;
+                    (grad_inn, grad_out)
+                } else {
+                    let v_out_sum = *v_sum;
+                    let mut grad_out_sum = v_out_sum - exp_out_sum;
+                    grad_out_sum *= var_out_sum / epsilon_var(self.eps, area_out);
+                    let grad_out = grad_out_sum / area_out as f64;
+                    let grad_inn = -grad_out_sum / area_inn as f64;
+                    (grad_inn, grad_out)
+                };
                 let into = grad_inn - grad_out;
                 grads[0][0] += grad_out;
                 grads[rect.y0][rect.x0] += into;
