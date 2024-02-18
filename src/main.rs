@@ -4400,7 +4400,7 @@ mod solver {
             }
             let n = self.is_pos.len();
             let v = predict(n, &rect, inn, eps);
-            if rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
+            if inn && rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
                 self.is_pos[rect.y0][rect.x0] = Some(v > 0.5);
             }
             self.hear.insert((rect, inn), v);
@@ -4540,25 +4540,15 @@ mod solver {
         }
         fn initialize(&self, predicts: &mut Predicts) -> usize {
             let mut skp = 0;
-            for y in 0..self.n {
-                let rect = Rect {
-                    y0: y,
-                    x0: 0,
-                    y1: y + 1,
-                    x1: self.n,
-                };
-                predicts.heard(rect, false, self.eps);
-                skp += 1;
-            }
-            for x in 0..self.n {
-                let rect = Rect {
-                    y0: 0,
-                    x0: x,
-                    y1: self.n,
-                    x1: x + 1,
-                };
-                predicts.heard(rect, false, self.eps);
-                skp += 1;
+            let d = max(1, (self.n as f64).sqrt() as usize);
+            for y0 in (0..self.n).step_by(d).take_while(|&y0| y0 + d <= self.n) {
+                let y1 = y0 + d;
+                for x0 in (0..self.n).step_by(d).take_while(|&x0| x0 + d <= self.n) {
+                    let x1 = x0 + d;
+                    let rect = Rect { y0, x0, y1, x1 };
+                    predicts.heard(rect, false, self.eps);
+                    skp += 1;
+                }
             }
             skp
         }
