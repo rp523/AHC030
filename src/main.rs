@@ -4506,7 +4506,7 @@ mod solver {
                 .iter()
                 .map(|oil| OilProb::new(self.n, oil))
                 .collect::<Vec<_>>();
-            let tot = 2 * self.n * self.n;
+            let tot = self.n * self.n;
             let skp = self.initialize(&mut predicts);
 
             for li in (0..tot).skip(skp) {
@@ -4530,8 +4530,10 @@ mod solver {
                         }
                     }
                 }
-                let rect = self.next_pred_pos(&pivot_oils, &predicts);
-                predicts.heard(rect, true, self.eps);
+                let field_tgt = self.next_pred_pos(&pivot_oils, &predicts);
+                predicts.heard(field_tgt, true, self.eps);
+                let oil_tgt = self.next_pred_oil(&pivot_oils, &predicts);
+                predicts.heard(oil_tgt, true, self.eps);
                 self.equilibrium(&self.oils, &mut pivot_oils, &mut predicts);
                 let pivot_field = FieldProb::new(&pivot_oils, &self.oils);
 
@@ -4594,6 +4596,60 @@ mod solver {
                 assert!(self.try_answer(&field, &predicts, &mut BTreeSet::new()));
             }
             field.uncertains(&predicts)
+        }
+        fn next_pred_oil(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Tgt {
+            let mut eval = None;
+            let mut opos = (0, (0, 0));
+            for (oi, oil_prob) in oil_probs.iter().enumerate() {
+                let mut eval1 = None;
+                let mut pos1 = (0, 0);
+                let mut var_sum = 0.0;
+                for (y0, leftop) in oil_prob.leftop.iter().enumerate() {
+                    for (x0, &leftop) in leftop.iter().enumerate() {
+                        {
+                            let mut pts = vec![];
+                            for (ry, row) in self.oils[oi].at.iter().enumerate() {
+                                let y = y0 + ry;
+                                let mut ro = vec![];
+                                for &(xb, xe) in row {
+                                    ro.push((x0 + xb, x0 + xe));
+                                }
+                                pts.push((y, ro));
+                            }
+                            let tgt = Tgt {
+                                pts,
+                                area: self.oils[oi].sz,
+                            };
+                            if predicts.hear.contains_key(&(tgt, true)) {
+                                continue;
+                            }
+                        }
+                        let var = leftop * (1.0 - leftop);
+                        var_sum += var;
+                        if eval1.chmax(var) {
+                            pos1 = (y0, x0);
+                        }
+                    }
+                }
+                let var_ave = var_sum / (oil_prob.h * oil_prob.w) as f64;
+                if eval.chmax(var_ave) {
+                    opos = (oi, pos1);
+                }
+            }
+            let (oi, (y0, x0)) = opos;
+            let mut pts = vec![];
+            for (ry, row) in self.oils[oi].at.iter().enumerate() {
+                let y = y0 + ry;
+                let mut ro = vec![];
+                for &(xb, xe) in row {
+                    ro.push((x0 + xb, x0 + xe));
+                }
+                pts.push((y, ro));
+            }
+            Tgt {
+                pts,
+                area: self.oils[oi].sz,
+            }
         }
         fn equilibrium(&self, oils: &[Oil], oil_probs: &mut [OilProb], predicts: &mut Predicts) {
             loop {
