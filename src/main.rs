@@ -4243,8 +4243,10 @@ mod solver {
     struct FieldProb {
         p0: Vec<Vec<f64>>,
         ex: Vec<Vec<f64>>,
-        ex_cum: Vec<Vec<f64>>,
-        var_cum: Vec<Vec<f64>>,
+        ex_cumx: Vec<Vec<f64>>,
+        ex_sum: f64,
+        var_cumx: Vec<Vec<f64>>,
+        var_sum: f64,
     }
     impl FieldProb {
         fn new(oil_probs: &[OilProb], oils: &[Oil]) -> Self {
@@ -4279,26 +4281,30 @@ mod solver {
                     }
                 }
             }
-            let mut ex_cum = vec![vec![0.0; n + 1]; n + 1];
-            let mut var_cum = vec![vec![0.0; n + 1]; n + 1];
+            let mut ex_cumx = vec![vec![0.0; n + 1]; n];
+            let mut var_cumx = vec![vec![0.0; n + 1]; n];
+            let mut ex_sum = 0.0;
+            let mut var_sum = 0.0;
             for y in (0..n).rev() {
                 for x in (0..n).rev() {
-                    ex_cum[y][x] =
-                        ex[y][x] + ex_cum[y][x + 1] + ex_cum[y + 1][x] - ex_cum[y + 1][x + 1];
-                    var_cum[y][x] =
-                        var[y][x] + var_cum[y][x + 1] + var_cum[y + 1][x] - var_cum[y + 1][x + 1];
+                    ex_sum += ex[y][x];
+                    var_sum += var[y][x];
+                    ex_cumx[y][x] = ex[y][x] + ex_cumx[y][x + 1];
+                    var_cumx[y][x] = var[y][x] + var_cumx[y][x + 1];
                 }
             }
             Self {
                 p0,
                 ex,
-                ex_cum,
-                var_cum,
+                ex_cumx,
+                ex_sum,
+                var_cumx,
+                var_sum,
             }
         }
-        fn uncertains(&self, predicts: &Predicts) -> Rect {
+        fn uncertains(&self, predicts: &Predicts) -> Tgt {
             let mut eval = None;
-            let mut ev_rect = Rect::from_point(0, 0);
+            let mut ev_rect = Tgt::from_point(0, 0);
             if eval.is_some() {
                 return ev_rect;
             }
@@ -4309,7 +4315,7 @@ mod solver {
                     }
                     let eval1 = (p0 - 0.5).abs();
                     if eval.chmin(eval1) {
-                        ev_rect = Rect::from_point(y, x);
+                        ev_rect = Tgt::from_point(y, x);
                     }
                 }
             }
@@ -4335,29 +4341,39 @@ mod solver {
                 true
             }
         }
+        fn exp_sum(&self, tgt: &Tgt) -> f64 {
+            let mut sum = 0.0;
+            for (y, rows) in tgt.pts.iter() {
+                for &(xb, xe) in rows {
+                    sum += self.ex_cumx[*y][xb] - self.ex_cumx[*y][xe];
+                }
+            }
+            sum
+        }
+        fn var_sum(&self, tgt: &Tgt) -> f64 {
+            let mut sum = 0.0;
+            for (y, rows) in tgt.pts.iter() {
+                for &(xb, xe) in rows {
+                    sum += self.var_cumx[*y][xb] - self.var_cumx[*y][xe];
+                }
+            }
+            sum
+        }
     }
     #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
-    struct Rect {
-        y0: usize,
-        x0: usize,
-        y1: usize,
-        x1: usize,
+    struct Tgt {
+        pts: Vec<(usize, Vec<(usize, usize)>)>,
+        area: usize,
     }
-    impl Rect {
-        fn area(&self) -> usize {
-            (self.y1 - self.y0) * (self.x1 - self.x0)
-        }
+    impl Tgt {
         fn from_point(y0: usize, x0: usize) -> Self {
-            Self {
-                y0,
-                x0,
-                y1: y0 + 1,
-                x1: x0 + 1,
-            }
+            let pts = vec![(y0, vec![(x0, x0 + 1)])];
+            let area = 1;
+            Self { pts, area }
         }
     }
     struct Predicts {
-        hear: BTreeMap<(Rect, bool), f64>,
+        hear: BTreeMap<(Tgt, bool), f64>,
         is_pos: Vec<Vec<Option<bool>>>,
     }
     impl Predicts {
@@ -4367,22 +4383,28 @@ mod solver {
                 is_pos: vec![vec![None; n]; n],
             }
         }
-        fn heard(&mut self, rect: Rect, inn: bool, eps: f64) {
-            fn predict(n: usize, rect: &Rect, inn: bool, eps: f64) -> f64 {
-                let mut pos = vec![];
+        fn heard(&mut self, tgt: Tgt, inn: bool, eps: f64) {
+            fn predict(n: usize, tgt: &Tgt, inn: bool, eps: f64) -> f64 {
+                let mut pos = BTreeSet::new();
                 if inn {
-                    for y in rect.y0..rect.y1 {
-                        for x in rect.x0..rect.x1 {
-                            pos.push((y, x));
+                    for (y, rows) in tgt.pts.iter() {
+                        for &(xb, xe) in rows {
+                            for x in xb..xe {
+                                pos.insert((*y, x));
+                            }
                         }
                     }
                 } else {
                     for y in 0..n {
                         for x in 0..n {
-                            if rect.y0 <= y && y < rect.y1 && rect.x0 <= x && x < rect.x1 {
-                                continue;
+                            pos.insert((y, x));
+                        }
+                    }
+                    for (y, rows) in tgt.pts.iter() {
+                        for &(xb, xe) in rows {
+                            for x in xb..xe {
+                                pos.remove(&(*y, x));
                             }
-                            pos.push((y, x));
                         }
                     }
                 }
@@ -4399,11 +4421,13 @@ mod solver {
                 (u - k as f64 * eps) / (1.0 - 2.0 * eps)
             }
             let n = self.is_pos.len();
-            let v = predict(n, &rect, inn, eps);
-            if inn && rect.y0 + 1 == rect.y1 && rect.x0 + 1 == rect.x1 {
-                self.is_pos[rect.y0][rect.x0] = Some(v > 0.5);
+            let v = predict(n, &tgt, inn, eps);
+            if inn && tgt.area == 1 {
+                let (y, vc) = &tgt.pts[0];
+                let (x, _) = vc[0];
+                self.is_pos[*y][x] = Some(v > 0.5);
             }
-            self.hear.insert((rect, inn), v);
+            self.hear.insert((tgt, inn), v);
         }
         fn is_pos_update(&mut self, yb: usize, xb: usize, b: bool) -> bool {
             if self.is_pos[yb][xb] == Some(b) {
@@ -4540,16 +4564,6 @@ mod solver {
         }
         fn initialize(&self, predicts: &mut Predicts) -> usize {
             let mut skp = 0;
-            let d = max(1, (self.n as f64).sqrt() as usize);
-            for y0 in (0..self.n).step_by(d).take_while(|&y0| y0 + d <= self.n) {
-                let y1 = y0 + d;
-                for x0 in (0..self.n).step_by(d).take_while(|&x0| x0 + d <= self.n) {
-                    let x1 = x0 + d;
-                    let rect = Rect { y0, x0, y1, x1 };
-                    predicts.heard(rect, false, self.eps);
-                    skp += 1;
-                }
-            }
             skp
         }
         fn may_fin_oil(&self, oil_probs: &[OilProb]) -> bool {
@@ -4574,7 +4588,7 @@ mod solver {
             }
             true
         }
-        fn next_pred_pos(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Rect {
+        fn next_pred_pos(&self, oil_probs: &[OilProb], predicts: &Predicts) -> Tgt {
             let field = FieldProb::new(&oil_probs, &self.oils);
             if field.eval(&predicts).is_none() {
                 assert!(self.try_answer(&field, &predicts, &mut BTreeSet::new()));
@@ -4600,7 +4614,7 @@ mod solver {
         fn greedy_better(&self, oil_probs: &Vec<OilProb>, predicts: &Predicts) -> Vec<OilProb> {
             let field = FieldProb::new(oil_probs, &self.oils);
             let mut next_oil_probs = oil_probs.clone();
-            let mut grads = vec![vec![0.0; self.n + 1]; self.n + 1];
+            let mut grads = vec![vec![0.0; self.n + 1]; self.n];
             const NEXT_EPS: f64 = 1e-5;
             fn epsilon_var(mut eps: f64, sz: usize) -> f64 {
                 if sz == 1 {
@@ -4608,16 +4622,13 @@ mod solver {
                 }
                 sz as f64 * eps * (1.0 - eps) / (1.0 - 2.0 * eps).powi(2)
             }
-            for ((rect, inn), v_sum) in predicts.hear.iter() {
-                let area_inn = rect.area();
+            for ((tgt, inn), v_sum) in predicts.hear.iter() {
+                let area_inn = tgt.area;
                 let area_out = self.n * self.n - area_inn;
-                let exp_inn_sum = (field.ex_cum[rect.y0][rect.x0] + field.ex_cum[rect.y1][rect.x1])
-                    - (field.ex_cum[rect.y0][rect.x1] + field.ex_cum[rect.y1][rect.x0]);
-                let exp_out_sum = field.ex_cum[0][0] - exp_inn_sum;
-                let var_inn_sum = (field.var_cum[rect.y0][rect.x0]
-                    + field.var_cum[rect.y1][rect.x1])
-                    - (field.var_cum[rect.y0][rect.x1] + field.var_cum[rect.y1][rect.x0]);
-                let var_out_sum = field.var_cum[0][0] - var_inn_sum;
+                let exp_inn_sum = field.exp_sum(tgt);
+                let exp_out_sum = field.ex_sum - exp_inn_sum;
+                let var_inn_sum = field.var_sum(tgt);
+                let var_out_sum = field.var_sum - var_inn_sum;
                 let (grad_inn, grad_out) = if *inn {
                     let v_inn_sum = *v_sum;
                     let mut grad_inn_sum = v_inn_sum - exp_inn_sum;
@@ -4634,20 +4645,19 @@ mod solver {
                     (grad_inn, grad_out)
                 };
                 let into = grad_inn - grad_out;
-                grads[0][0] += grad_out;
-                grads[rect.y0][rect.x0] += into;
-                grads[rect.y0][rect.x1] -= into;
-                grads[rect.y1][rect.x0] -= into;
-                grads[rect.y1][rect.x1] += into;
+                for y in 0..self.n {
+                    grads[y][0] += grad_out;
+                }
+                for (y, rows) in tgt.pts.iter() {
+                    for &(xb, xe) in rows {
+                        grads[*y][xb] += into;
+                        grads[*y][xe] -= into;
+                    }
+                }
             }
             for y in 0..self.n {
                 for x in 1..self.n {
                     grads[y][x] += grads[y][x - 1];
-                }
-            }
-            for y in 1..self.n {
-                for x in 0..self.n {
-                    grads[y][x] += grads[y - 1][x];
                 }
             }
             for y in 0..self.n {
